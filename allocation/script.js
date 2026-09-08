@@ -407,8 +407,8 @@ function tryResolveWithShift(movedId, targetMachine, reqStart) {
 }
 
 /* ── Manual machine override ──
- * Handles both regular board moves and re-assignment of unallocated parts
- * (parts displaced by maintenance) back to an active machine.
+ * Reorder or move a part (including red/stopped parts on a maintenance machine)
+ * onto a valid non-maintenance machine. Stage is preserved by the existing move API.
  */
 async function handleMachineChange(allocationId, targetMachine, targetIndex) {
   const a = allocations.find(x => x.id === allocationId);
@@ -419,12 +419,6 @@ async function handleMachineChange(allocationId, targetMachine, targetIndex) {
     return { success: false, message: 'Drop the part onto an active machine row.' };
   if (isMaintenance(targetMachine))
     return { success: false, message: `${targetMachine} is under maintenance.` };
-  // Clear unallocated flags optimistically so the card moves immediately on render.
-  const wasUnallocated = Boolean(a.unallocated);
-  if (wasUnallocated) {
-    delete a.unallocated;
-    delete a.originalMachine;
-  }
   try {
     const response = await fetch(`${API_BASE_URL}/allocation-results/${a.dbId}/move`, {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -434,8 +428,6 @@ async function handleMachineChange(allocationId, targetMachine, targetIndex) {
     await loadFromStorage();
     return {success:true};
   } catch (error) {
-    // Restore flag if the backend rejected the move.
-    if (wasUnallocated) { a.unallocated = true; a.originalMachine = targetMachine; }
     return {success:false,message:`The move could not be saved: ${error.message}`};
   }
 }
@@ -522,56 +514,47 @@ async function setMaintenance(id) {
   const m = getMachine(id); if (!m) return;
   m.maintenance = true;
 
-  const unalloc = [];
-
+  // Parts stay on this machine. Running work is halted so cards turn red and
+  // remain draggable; nothing is moved to Not Allocated.
   allocations.forEach(a => {
     if (a.machine !== id) return;
     if (a.status === 'running') a.status = 'idle';
-    a.unallocated = true;
-    a.originalMachine = id;
-    unalloc.push(a.partNo);
   });
 
-  // Persist maintenance state to the backend so it survives page reloads.
   try {
-    await fetch(`${API_BASE_URL}/allocation-machines/${encodeURIComponent(id)}/maintenance`, {method:'POST'});
-  } catch (err) { console.warn('Maintenance persist failed:', err); }
+    const response = await fetch(`${API_BASE_URL}/allocation-machines/${encodeURIComponent(id)}/maintenance`, {method:'POST'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (err) {
+    m.maintenance = false;
+    showToast('⚠ MAINTENANCE NOT SAVED', err.message || 'Unable to persist maintenance.');
+    await loadFromStorage();
+    renderAll();
+    return;
+  }
 
+  await loadFromStorage();
   renderAll();
-
-  if (unalloc.length)
-    showToast('⚠ MACHINE MAINTENANCE', `${id} under maintenance. Unallocated: ${unalloc.join(', ')}`);
-  else
-    showToast('⚠ MACHINE MAINTENANCE', `${id} is under maintenance.`);
+  showToast('⚠ MACHINE MAINTENANCE', `${id} is under maintenance. Parts remain on the machine and are stopped.`);
 }
 
 async function removeMaintenance(id) {
   const m = getMachine(id); if (!m) return;
   m.maintenance = false;
 
-  // Restore only jobs displaced by THIS machine's maintenance event
-  let restored = 0;
-  allocations.forEach(a => {
-    if (a.originalMachine === id) {
-      a.machine    = id;
-      if (a.originalStartTime) { a.startTime = a.originalStartTime; delete a.originalStartTime; }
-      if (a.originalEndTime)   { a.endTime   = a.originalEndTime;   delete a.originalEndTime;   }
-      if (a.originalStartDate) { a.startDate = a.originalStartDate; delete a.originalStartDate; }
-      if (a.originalEndDate)   { a.endDate   = a.originalEndDate;   delete a.originalEndDate;   }
-      delete a.unallocated;
-      delete a.originalMachine;
-      restored++;
-    }
-  });
-
-  // Remove from persistent backend registry.
   try {
-    await fetch(`${API_BASE_URL}/allocation-machines/${encodeURIComponent(id)}/maintenance`, {method:'DELETE'});
-  } catch (err) { console.warn('Maintenance removal failed:', err); }
+    const response = await fetch(`${API_BASE_URL}/allocation-machines/${encodeURIComponent(id)}/maintenance`, {method:'DELETE'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (err) {
+    m.maintenance = true;
+    showToast('⚠ MAINTENANCE UPDATE FAILED', err.message || 'Unable to clear maintenance.');
+    await loadFromStorage();
+    renderAll();
+    return;
+  }
 
+  await loadFromStorage();
   renderAll();
-  if (restored > 0)
-    showToast('✓ MACHINE RESTORED', `${id} is back. ${restored} part(s) restored to ${id}.`);
+  showToast('✓ MACHINE RESTORED', `${id} is back from maintenance. Allocated parts were left in place.`);
 }
 
 /* ── Export to Excel (SpreadsheetML) ── */
@@ -654,19 +637,6 @@ function renderMachines() {
     list.appendChild(item);
   });
 
-  // Not Allocated label row at the bottom
-  const unallocated = allocations.filter(a => a.unallocated);
-  const naHeight = LANE_HEIGHT;
-
-  const naItem = document.createElement('div');
-  naItem.className = 'machine-item not-allocated-label';
-  naItem.style.height = naHeight + 'px';
-  naItem.innerHTML = `
-    <div class="machine-name na-title">⚠ Not Allocated</div>
-    <div class="machine-status na-count">${unallocated.length} part${unallocated.length !== 1 ? 's' : ''}</div>
-    <div class="na-hint">Machine under maintenance</div>`;
-  list.appendChild(naItem);
-
   list.querySelectorAll('[data-action="maintenance"]').forEach(btn =>
     btn.addEventListener('click', e => { e.stopPropagation(); setMaintenance(btn.dataset.machine); }));
   list.querySelectorAll('[data-action="back-maintenance"]').forEach(btn =>
@@ -676,16 +646,18 @@ function renderMachines() {
 /* ── Create allocation box ── */
 function createAllocationElement(allocation) {
   const stageClass = allocation.stage === 'Stage 1' ? 'stage-1' : 'stage-2';
-  const inMaintenance = isMaintenance(allocation.machine) || !!allocation.unallocated;
-  const queueState = getQueueState(allocation);
+  const inMaintenance = isMaintenance(allocation.machine);
+  const queueState = inMaintenance ? 'stopped' : getQueueState(allocation);
   const isRunning  = queueState === 'running';
   const canStart   = canStartAllocation(allocation);
   const dependencyBlocked = allocation.stage === 'Stage 2' && !stageDependencySatisfied(allocation);
 
   const box = document.createElement('div');
-  box.className = `allocation-box ${stageClass} queue-${queueState}`;
+  box.className = `allocation-box ${stageClass} queue-${queueState}` + (inMaintenance ? ' maintenance-part' : ' active-machine-part');
   box.dataset.id = allocation.id;
-  box.title = allocation.stage === 'Stage 2' && !stageDependencySatisfied(allocation)
+  box.title = inMaintenance
+    ? 'Machine under maintenance — drag this part to a valid machine'
+    : allocation.stage === 'Stage 2' && !stageDependencySatisfied(allocation)
     ? 'Stage 1 must be completed before this operation can start.' : 'Drag to reorder or move to another machine';
 
   box.style.width  = FIXED_CARD_WIDTH + 'px';
@@ -779,36 +751,17 @@ function renderAllocations() {
     row.style.width = getBoardWidth() + 'px';
     row.style.height = rowH + 'px';
 
+    const lane = document.createElement('div');
+    lane.className = 'machine-lane';
+    allocs.slice(0, MAX_VISIBLE_ALLOCATIONS)
+      .forEach(alloc => lane.appendChild(createAllocationElement(alloc)));
+    row.appendChild(lane);
     if (machine.maintenance) {
       const ov = document.createElement('div'); ov.className = 'maintenance-overlay'; row.appendChild(ov);
       const lb = document.createElement('div'); lb.className = 'maintenance-label'; lb.textContent = '🔴 MAINTENANCE'; row.appendChild(lb);
-    } else {
-      const lane = document.createElement('div');
-      lane.className = 'machine-lane';
-      allocs.slice(0, MAX_VISIBLE_ALLOCATIONS)
-        .forEach(alloc => lane.appendChild(createAllocationElement(alloc)));
-      row.appendChild(lane);
     }
     wrap.appendChild(row);
   });
-
-  // Not Allocated row — parts whose machine went into maintenance
-  const unallocated = allocations.filter(a => a.unallocated);
-  const naRow = document.createElement('div');
-  naRow.className = 'machine-row not-allocated-row';
-  naRow.dataset.machine = '__unallocated__';
-  naRow.style.width = getBoardWidth() + 'px';
-  naRow.style.height = LANE_HEIGHT + 'px';
-
-  const unallocatedLane = document.createElement('div');
-  unallocatedLane.className = 'machine-lane';
-  unallocated.forEach(alloc => {
-    const box = createAllocationElement(alloc);
-    box.classList.add('unallocated-box');
-    unallocatedLane.appendChild(box);
-  });
-  naRow.appendChild(unallocatedLane);
-  wrap.appendChild(naRow);
 }
 
 function renderAll() { renderTimeline(); renderMachines(); renderAllocations(); syncScrollHeights(); }
@@ -872,8 +825,6 @@ function getTargetFromPointer(clientX, clientY) {
 function isDropValid(target, s, e) {
   const allocation = allocations.find(a => a.id === dragState.allocationId);
   if (!allocation) return false;
-  // Unallocated parts (displaced by maintenance) can be dropped onto any
-  // active, non-maintenance machine — that is exactly the re-assignment path.
   if (!machines.some(machine => machine.id === target)) return false;
   if (isMaintenance(target)) return false;
   return true;
@@ -905,8 +856,13 @@ async function onDragEnd(e) {
   document.getElementById('dragPreview').hidden = true;
   document.querySelectorAll('.machine-row').forEach(r => r.classList.remove('drag-target','drag-target-invalid'));
 
-  const { targetMachine, targetIndex } = getTargetFromPointer(e.clientX, e.clientY);
+  const { targetMachine, targetIndex, newStart, newEnd } = getTargetFromPointer(e.clientX, e.clientY);
   const movedId = dragState.allocationId;
+  if (!isDropValid(targetMachine, newStart, newEnd)) {
+    dragState = null;
+    renderAll();
+    return;
+  }
   const result = await handleMachineChange(movedId, targetMachine, targetIndex);
   if (!result.success) {
     await loadFromStorage();

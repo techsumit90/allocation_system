@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nova – Auth &
+         Dashboard</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+
+        :root {
+            --primary: #124373;
+            --primary-glow: rgba(18, 67, 115, 0.15);
+            --secondary: #0066cc;
+            --secondary-glow: rgba(0, 102, 204, 0.15);
+            --bg-dark: #f1f5f9;
+            --card-bg: #ffffff;
+            --card-border: #cbd5e1;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --error: #dc2626;
+            --success: #15803d;
+            --warning: #b45309;
+        }
+
+        body, html {
+            margin: 0; padding: 0; width: 100vw; height: 100vh;
+            font-family: 'Outfit', sans-serif;
+            background: linear-gradient(135deg, #f0f4f9 0%, #d9e2ec 100%);
+            color: var(--text-main);
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .app-container {
+            position: relative; width: 100%; max-width: 500px;
+            height: 620px; z-index: 10;
+            transition: max-width 0.4s ease, height 0.4s ease;
+        }
+        
+        .app-container.wide {
+            max-width: 900px;
+            height: 700px;
+        }
+
+        /* ── Welcome + Login redesign (scoped to #page1 / #login-step1 only) ── */
+        #page1, #login-step1 {
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.08);
+        }
+        #page1 .company-logo, #login-step1 .company-logo {
+            width: 90px;
+            height: auto;
+        }
+        .welcome-heading {
+            margin: 0 0 8px 0;
+            text-transform: uppercase;
+            font-weight: 800;
+            font-size: 1.4rem;
+            letter-spacing: 2px;
+            color: #0A2A66;
+            text-align: center;
+        }
+        .welcome-subtitle {
+            margin: 0 0 24px 0;
+            color: #0052cc;
+            font-size: 14px;
+            font-weight: 500;
+            text-align: center;
+        }
+        .btn-lg {
+            padding: 16px 20px;
+            font-size: 1.05rem;
+            font-weight: 600;
+            border-radius: 10px;
+        }
+        #group-login-pass { position: relative; }
+        #loginPassword { padding-right: 44px; }
+        .pw-toggle {
+            position: absolute;
+            right: 14px;
+            top: 14px;
+            font-size: 16px;
+            line-height: 1;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .page {
+            position: absolute; inset: 0;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border); border-radius: 12px;
+            padding: 30px 35px;
+            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05), 0 4px 6px -4px rgba(0,0,0,0.05);
+            display: flex; flex-direction: column; justify-content: flex-start;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            opacity: 0; pointer-events: none; visibility: hidden;
+            overflow-y: auto;
+        }
+        .page::-webkit-scrollbar { width: 6px; }
+        .page::-webkit-scrollbar-track { background: transparent; }
+        .page::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .page { -ms-overflow-style: auto; scrollbar-width: thin; }
+
+        .page.active { opacity: 1; transform: translateX(0); pointer-events: all; visibility: visible; }
+        .page.right  { transform: translateX(50px); opacity: 0; }
+        .page.left   { transform: translateX(-50px); opacity: 0; }
+
+        .logo-header {
+            text-align: center;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .company-logo {
+            height: 60px;
+            object-fit: contain;
+        }
+
+        h2 {
+            margin: 0 0 10px 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;
+            color: var(--primary); text-align: center;
+        }
+        p.subtitle { color: var(--text-muted); margin-bottom: 24px; font-size: 14px; font-weight: 400; text-align: center; }
+
+        .input-group { position: relative; margin-bottom: 24px; }
+        .input-group input {
+            width: 100%; padding: 14px 16px; border-radius: 8px;
+            border: 1px solid var(--card-border); background: #ffffff;
+            color: var(--text-main); font-family: inherit; font-size: 15px;
+            box-sizing: border-box; transition: all 0.2s ease; outline: none;
+        }
+        .input-group label {
+            position: absolute; left: 16px; top: 14px; color: var(--text-muted);
+            transition: all 0.2s ease; pointer-events: none;
+            font-size: 15px; font-weight: 400;
+        }
+        .input-group input:focus,
+        .input-group input:not(:placeholder-shown) {
+            border-color: var(--primary); background: #ffffff;
+            box-shadow: 0 0 0 3px var(--primary-glow);
+        }
+        .input-group input:focus + label,
+        .input-group input:not(:placeholder-shown) + label {
+            top: -9px; left: 12px; font-size: 12px; font-weight: 500;
+            background: var(--card-bg); padding: 0 6px; color: var(--primary);
+            border-radius: 4px; letter-spacing: 0.5px;
+        }
+
+        @keyframes violent-shake {
+            0%,100% { transform: translateX(0); }
+            20% { transform: translateX(-8px); }
+            40% { transform: translateX(8px); }
+            60% { transform: translateX(-8px); }
+            80% { transform: translateX(8px); }
+        }
+        .error input, .error select { border-color: var(--error) !important; box-shadow: 0 0 0 3px rgba(220,38,38,0.15) !important; }
+        .error label { color: var(--error) !important; }
+        .shake { animation: violent-shake 0.4s ease; }
+
+        button {
+            width: 100%; padding: 14px; border: none; border-radius: 8px;
+            font-size: 15px; font-weight: 600; font-family: inherit;
+            cursor: pointer; transition: all 0.2s ease;
+            position: relative; overflow: hidden;
+        }
+        button:active { transform: scale(0.98); }
+
+        .btn-primary {
+            background: var(--primary);
+            color: #fff; margin-bottom: 16px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .btn-primary:hover { background: #0c3156; }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+        .btn-secondary {
+            background: #f8fafc; color: var(--text-main);
+            border: 1px solid var(--card-border);
+        }
+        .btn-secondary:hover { background: #f1f5f9; border-color: #94a3b8; }
+
+        .back-link {
+            text-align: center; margin-top: 12px; font-size: 14px;
+            color: var(--text-muted); cursor: pointer; transition: all 0.2s;
+            display: inline-block; width: 100%;
+        }
+        .back-link:hover { color: var(--primary); text-decoration: underline; }
+
+        @keyframes scaleUp {
+            from { transform: scale(0.8); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        .success-icon {
+            display: none; width: 64px; height: 64px; border-radius: 50%;
+            background: #f0fdf4; border: 2px solid var(--success);
+            color: var(--success); font-size: 32px; line-height: 64px; text-align: center;
+            margin: 0 auto 20px auto;
+            animation: scaleUp 0.3s ease-out forwards;
+        }
+
+        /* ── Dashboard Table ── */
+        table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+        th {
+            background: #f8fafc; color: var(--text-muted);
+            font-weight: 600; padding: 10px 8px; font-size: 11px;
+            text-transform: uppercase; letter-spacing: 1px;
+            border-bottom: 2px solid var(--card-border);
+        }
+        td { padding: 10px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
+
+        .table-select {
+            width: 100%; padding: 8px 10px; border-radius: 6px;
+            background: #ffffff; color: var(--text-main);
+            border: 1px solid var(--card-border); font-family: inherit;
+            font-size: 13px; outline: none; cursor: pointer; transition: all 0.2s;
+        }
+        .table-select option { background: #ffffff; color: var(--text-main); }
+        .table-select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-glow); }
+        .table-select.dup-error { border-color: var(--error) !important; box-shadow: 0 0 0 2px rgba(220,38,38,0.15) !important; }
+
+        .priority-badge {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 24px; height: 24px; border-radius: 50%; font-size: 12px;
+            font-weight: 600; background: var(--primary);
+            color: #fff; margin: 0 auto; display: block; text-align: center; line-height: 24px;
+        }
+
+        .btn-add-row {
+            background: #f0fdf4; color: var(--success);
+            border: 1px solid rgba(21,128,61,0.3); padding: 8px 14px;
+            width: auto; border-radius: 6px; font-size: 13px; float: right; margin-bottom: 10px;
+            font-weight: 500;
+        }
+        .btn-add-row:hover { background: var(--success); color: white; }
+
+        .btn-remove-row {
+            width: 32px; height: 32px; padding: 0; border-radius: 6px;
+            background: #fef2f2; color: var(--error);
+            border: 1px solid rgba(220,38,38,0.3);
+            display: flex; justify-content: center; align-items: center; margin: 0 auto;
+            font-size: 14px;
+        }
+        .btn-remove-row:hover { background: var(--error); color: white; transform: scale(1.05); }
+
+        @keyframes slideInDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .dynamic-row { animation: slideInDown 0.3s ease-out forwards; transition: opacity 0.3s, transform 0.3s; }
+
+        /* ── Duplicate Toast ── */
+        #dup-toast {
+            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(80px);
+            background: #fee2e2; border: 1px solid #fca5a5;
+            color: #991b1b; padding: 12px 24px; border-radius: 8px; font-size: 14px;
+            z-index: 1000; font-weight: 500;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            opacity: 0; pointer-events: none; white-space: nowrap;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+        }
+        #dup-toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+        /* ── Loading spinner ── */
+        .spinner {
+            display: inline-block; width: 16px; height: 16px;
+            border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+            border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 8px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Results Page ── */
+        .results-header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+        .results-badge {
+            padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+            background: var(--primary);
+            color: #fff; letter-spacing: 0.5px;
+        }
+
+        .api-error-banner {
+            background: #fee2e2; border: 1px solid #fca5a5;
+            border-radius: 8px; padding: 14px 16px; margin-bottom: 16px;
+            font-size: 14px; color: #991b1b; display: none;
+        }
+
+        .results-table {
+            width: 100%;
+            color: #1e293b;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #cbd5e1;
+            font-size: 14px;
+        }
+
+        .results-table th {
+            background: var(--primary);
+            color: #ffffff;
+            padding: 12px;
+            text-align: left;
+            position: sticky;
+            font-weight: 500;
+            top: 0;
+        }
+
+        .results-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #cbd5e1;
+        }
+
+        .results-table tr:nth-child(even) {
+            background: #f8fafc;
+        }
+
+        .results-table tr:hover {
+            background: #f1f5f9;
+        }
+
+        .results-table td,
+        .results-table th {
+            white-space: nowrap;
+        }
+
+        #results-container {
+            overflow-x: auto;
+        }
+
+        .allocation-action-bar {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 14px;
+        }
+
+        .btn-proceed-allocation {
+            width: auto;
+            min-width: 230px;
+            background: #15803d;
+            color: #ffffff;
+            border: 1px solid #15803d;
+            padding: 13px 20px;
+            border-radius: 8px;
+            font-weight: 700;
+        }
+
+        .btn-proceed-allocation:hover {
+            background: #166534;
+        }
+    </style>
+</head>
+<body>
+
+<!-- Duplicate Toast -->
+<div id="dup-toast">⚠ Duplicate combination detected</div>
+
+<div class="app-container">
+
+    <!-- PAGE 1: Welcome -->
+    <div id="page1" class="page active">
+        <div class="logo-header">
+            <img src="hal_logo.png" alt="HAL Logo" class="company-logo">
+        </div>
+        <div style="text-align:center; margin-top:10px;">
+            <div class="welcome-heading">Welcome to the CNC Complex</div>
+            <p class="welcome-subtitle">Scheduler..</p>
+            <button class="btn-primary btn-lg" onclick="navigate('page1','login-step1','forward')">Sign In</button>
+            <button class="btn-secondary btn-lg" onclick="navigate('page1','signup-step1','forward')">Create Account</button>
+        </div>
+    </div>
+
+    <!-- LOGIN (single-step: username + password together) -->
+    <div id="login-step1" class="page right">
+        <div class="logo-header">
+            <img src="hal_logo.png" alt="HAL Logo" class="company-logo">
+        </div>
+        <div id="login-form-content">
+            <h2>Sign in as Admin</h2>
+            <p class="subtitle">Enter your credentials to continue.</p>
+            <div class="input-group" id="group-login-user">
+                <input type="text" id="loginUsername" placeholder=" " autocomplete="off">
+                <label>Username</label>
+            </div>
+            <div class="input-group" id="group-login-pass">
+                <input type="password" id="loginPassword" placeholder=" " autocomplete="off">
+                <label>Password</label>
+                <span class="pw-toggle" id="loginPwToggle" onclick="toggleLoginPassword()">👁️</span>
+            </div>
+            <div id="login-error" class="api-error-banner" style="display:none;"></div>
+            <button class="btn-primary btn-lg" onclick="submitLogin()">Login</button>
+            <div class="back-link" onclick="navigate('login-step1','page1','backward')">← Return Home</div>
+        </div>
+        <div id="login-success-state" style="display:none; text-align:center; margin-top:20px;">
+            <div class="success-icon" id="login-success-icon">✓</div>
+            <h2>Access Granted</h2>
+            <p class="subtitle" id="login-greeting">Secure connection established.</p>
+            <button class="btn-primary" onclick="navigate('login-step1','dashboard-page','forward')">Enter Dashboard</button>
+        </div>
+    </div>
+
+    <!-- SIGNUP (single step: Full Legal Name, Username, Password only) -->
+    <div id="signup-step1" class="page right">
+        <div class="logo-header">
+            <img src="hal_logo.png" alt="HAL Logo" class="company-logo">
+        </div>
+        <div id="signup-form-content">
+            <h2>Create Account</h2><p class="subtitle">Register with your details.</p>
+            <div class="input-group" id="group-name"><input type="text" id="fullName" placeholder=" " autocomplete="off"><label>Full Legal Name</label></div>
+            <div class="input-group" id="group-username"><input type="text" id="username" placeholder=" " autocomplete="off"><label>Username</label></div>
+            <div class="input-group" id="group-password"><input type="password" id="password" placeholder=" " autocomplete="off"><label>Password</label></div>
+            <div id="signup-error" class="api-error-banner" style="display:none;"></div>
+            <button class="btn-primary" onclick="submitSignup()">Initialize Account</button>
+            <div class="back-link" onclick="navigate('signup-step1','page1','backward')">← Cancel</div>
+        </div>
+        <div id="signup-success-state" style="display:none; text-align:center; margin-top:20px;">
+            <div class="success-icon" id="signup-success-icon">✓</div>
+            <h2>System Ready</h2>
+            <p class="subtitle">Your profile has been created.</p>
+            <button class="btn-primary" onclick="navigate('signup-step1','dashboard-page','forward')">Enter Dashboard</button>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════
+         DASHBOARD PAGE
+    ══════════════════════════════════════════════ -->
+    <div id="dashboard-page" class="page right" style="justify-content:flex-start; padding-top:28px;">
+        <div class="logo-header">
+            <img src="hal_logo.png" alt="HAL Logo" class="company-logo">
+        </div>
+        <h2 style="font-size:26px;">Priority Configurator</h2>
+        <p class="subtitle" style="margin-bottom:8px;">Row order = priority rank (top = highest)</p>
+
+        <div style="overflow:hidden;">
+            <button class="btn-add-row" onclick="addRow()">+ Add Row</button>
+            <div style="clear:both;"></div>
+        </div>
+
+        <table id="dashboard-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>PROJECT</th>
+                    <th>MODULE</th>
+                    <th>AC_COMP</th>
+                    <th>DEL</th>
+                </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+        </table>
+
+        <div id="api-error-banner" class="api-error-banner"></div>
+
+        <button class="btn-primary" id="submit-btn" onclick="submitDashboardData()" style="margin-top:auto;">
+            Submit &amp; Fetch Results
+        </button>
+        <button class="btn-secondary" id="existing-allocation-btn" onclick="openExistingAllocation()" style="margin-top:8px;">
+            Existing Allocation
+        </button>
+        <div class="back-link" onclick="resetApp()">← Logout</div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════
+         RESULTS PAGE  (populated after API call)
+    ══════════════════════════════════════════════ -->
+    <div id="results-page" class="page right" style="justify-content:flex-start; padding-top:28px;width:100%;">
+        <div class="logo-header">
+            <img src="hal_logo.png" alt="HAL Logo" class="company-logo">
+        </div>
+        <div class="results-header">
+            <h2 style="font-size:24px; margin:0;">Query Results</h2>
+            <span class="results-badge" id="result-count-badge">0 rows</span>
+        </div>
+        <p class="subtitle" style="margin-bottom:14px;">Sorted by your priority order</p>
+
+       <div
+    id="results-container"
+    style="flex:1; overflow-y:auto;"
+></div>
+
+
+<div
+    id="allocation-error"
+    style="
+        display:none;
+        margin-top:12px;
+        padding:12px;
+        border-radius:8px;
+        background:#fff1f2;
+        border:1px solid #fecaca;
+        color:#b91c1c;
+        font-size:14px;
+    "
+></div>
+
+
+<div
+    style="
+        display:flex;
+        gap:12px;
+        margin-top:14px;
+        flex-wrap:wrap;
+    "
+>
+
+    <button
+        class="btn-primary"
+        id="proceed-allocation-btn"
+        onclick="proceedForAllocation()"
+        style="
+            flex:1;
+            min-width:220px;
+            background:#166534;
+        "
+    >
+        ⚙ Proceed for Allocation
+    </button>
+
+
+    <button
+        class="btn-primary"
+        onclick="
+            navigate(
+                'results-page',
+                'dashboard-page',
+                'backward'
+            );
+            resetDashboard();
+        "
+        style="
+            flex:1;
+            min-width:220px;
+        "
+    >
+        ← Configure Again
+    </button>
+
+</div>
+
+
+<div
+    class="back-link"
+    onclick="resetApp()"
+>
+    Logout
+</div>
+    </div>
+
+</div>
+
+<script>
+/* ══════════════════════════════════════════════
+   CONFIG – point to your FastAPI server
+══════════════════════════════════════════════ */
+const API_BASE = "http://localhost:8000";   // existing Sorting API
+const ALLOCATION_API_BASE = "http://localhost:8001"; // allocation API (main1.py)
+
+// Sorting Dashboard and Allocation Dashboard should be sibling folders.
+// Example: /sorting/index.html  ->  /allocation/index.html
+const ALLOCATION_DASHBOARD_URL = "../allocation/index.html";
+
+let sortedRowsForAllocation = [];
+let latestSortedRows = [];
+
+/* ══════════════════════════════════════════════
+   NAVIGATION
+══════════════════════════════════════════════ */
+function navigate(fromId, toId, direction) {
+    const from = document.getElementById(fromId);
+    const to   = document.getElementById(toId);
+    
+    // Toggles container width dynamically for dashboard/results vs auth views
+    const container = document.querySelector('.app-container');
+    if (toId === 'dashboard-page' || toId === 'results-page') {
+        container.classList.add('wide');
+    } else {
+        container.classList.remove('wide');
+    }
+    
+    from.classList.remove('active');
+    if (direction === 'forward') {
+        from.classList.add('left');
+        to.classList.remove('right','left'); to.classList.add('active');
+    } else {
+        from.classList.add('right');
+        to.classList.remove('left','right'); to.classList.add('active');
+    }
+}
+
+/* ══════════════════════════════════════════════
+   AUTH VALIDATION
+══════════════════════════════════════════════ */
+function validateFields(ids) {
+    let ok = true;
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el.value.trim()) {
+            ok = false;
+            const g = el.parentElement;
+            g.classList.add('error','shake');
+            setTimeout(() => g.classList.remove('shake'), 400);
+        } else { el.parentElement.classList.remove('error'); }
+    });
+    return ok;
+}
+
+/* Lightweight client-side session cache ONLY — identifies who is currently
+   signed in so the sorting page and the allocation dashboard can pass
+   user_id to the backend. It is NOT the source of truth for any allocation,
+   completion, queue, maintenance, or Work Order data — that all comes from
+   MySQL via the API on every load, per the persistence requirement. */
+function setCurrentUser(user) {
+    localStorage.setItem('cnc_current_user', JSON.stringify(user));
+}
+function getCurrentUser() {
+    try { return JSON.parse(localStorage.getItem('cnc_current_user') || 'null'); }
+    catch { return null; }
+}
+
+function showAuthError(elId, message) {
+    const el = document.getElementById(elId);
+    el.textContent = message;
+    el.style.display = 'block';
+}
+function hideAuthError(elId) {
+    const el = document.getElementById(elId);
+    el.style.display = 'none';
+    el.textContent = '';
+}
+
+const USERNAME_ALNUM_RE = /^[A-Za-z0-9]+$/;
+
+async function submitLogin() {
+    hideAuthError('login-error');
+    if (!validateFields(['loginUsername','loginPassword'])) return;
+    const username = document.getElementById('loginUsername').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    if (password.length < 6) { showAuthError('login-error', 'Password must be at least 6 characters.'); return; }
+
+    try {
+        const res = await fetch(`${API_BASE}/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(result.detail || 'Invalid username or password.');
+
+        setCurrentUser({ user_id: result.user_id, username: result.username, full_name: result.full_name });
+        document.getElementById('login-greeting').innerText = `Welcome back, ${result.full_name || result.username}.`;
+        document.getElementById('login-form-content').style.display = 'none';
+        document.getElementById('login-success-state').style.display = 'block';
+        document.getElementById('login-success-icon').style.display = 'block';
+    } catch (err) {
+        showAuthError('login-error', err.message || 'Login failed.');
+    }
+}
+function toggleLoginPassword() {
+    const pwd = document.getElementById('loginPassword');
+    const icon = document.getElementById('loginPwToggle');
+    if (pwd.type === 'password') {
+        pwd.type = 'text';
+        icon.textContent = '🙈';
+    } else {
+        pwd.type = 'password';
+        icon.textContent = '👁️';
+    }
+}
+
+async function submitSignup() {
+    hideAuthError('signup-error');
+    if (!validateFields(['fullName','username','password'])) return;
+    const fullName = document.getElementById('fullName').value.trim();
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+
+    if (!USERNAME_ALNUM_RE.test(username)) {
+        showAuthError('signup-error', 'Username must contain only letters and digits.');
+        return;
+    }
+    if (password.length < 6) {
+        showAuthError('signup-error', 'Password must be at least 6 characters.');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/auth/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ full_name: fullName, username, password })
+        });
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(result.detail || 'Registration failed.');
+
+        setCurrentUser({ user_id: result.user_id, username: result.username, full_name: result.full_name });
+        document.getElementById('signup-form-content').style.display = 'none';
+        document.getElementById('signup-success-state').style.display = 'block';
+        document.getElementById('signup-success-icon').style.display = 'block';
+    } catch (err) {
+        showAuthError('signup-error', err.message || 'Registration failed. Try a different username.');
+    }
+}
+
+/* ══════════════════════════════════════════════
+   EXISTING ALLOCATION — restore, never re-run
+══════════════════════════════════════════════ */
+async function openExistingAllocation() {
+    const user = getCurrentUser();
+    const btn = document.getElementById('existing-allocation-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+    try {
+        const url = user?.user_id
+            ? `${ALLOCATION_API_BASE}/allocation-batch/active?user_id=${encodeURIComponent(user.user_id)}`
+            : `${ALLOCATION_API_BASE}/allocation-batch/active`;
+        const res = await fetch(url, { cache: 'no-store' });
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(result.detail || 'Unable to check for an active allocation.');
+
+        if (!result.has_active_batch) {
+            showToast('No active allocation found for your account.');
+            return;
+        }
+        // Restore only — no sorting, no re-allocation, no queue reset.
+        window.location.href = ALLOCATION_DASHBOARD_URL;
+    } catch (err) {
+        showToast(err.message || 'Unable to restore existing allocation.');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Existing Allocation'; }
+    }
+}
+
+/* ══════════════════════════════════════════════
+   DASHBOARD – TABLE LOGIC
+══════════════════════════════════════════════ */
+const PROJECTS = ["Maruti","Mahindra","Audi","Tata","BMW","Tesla"];
+const MODULES  = ["Transmission","Door","Braking","Wheel","Engine","Chassis"];
+
+// Track all selected combinations: key = "project::module"
+const usedCombos = new Set();
+
+function buildOptions(list, selectedValue) {
+    return list.map(v => `<option value="${v}" ${v===selectedValue?'selected':''}>${v}</option>`).join('');
+}
+
+function addRow() {
+    const tbody = document.getElementById("table-body");
+    const rowIndex = tbody.rows.length + 1;
+
+    const row = document.createElement("tr");
+    row.className = "dynamic-row";
+    row.dataset.combo = "";   // tracks current project::module combo
+
+    row.innerHTML = `
+        <td><span class="priority-badge">${rowIndex}</span></td>
+        <td>
+            <select class="table-select proj-sel" onchange="onComboChange(this.closest('tr'))">
+                ${buildOptions(PROJECTS, PROJECTS[0])}
+            </select>
+        </td>
+        <td>
+            <select class="table-select mod-sel" onchange="onComboChange(this.closest('tr'))">
+                ${buildOptions(MODULES, MODULES[0])}
+            </select>
+        </td>
+        <td>
+            <input type="number" class="table-select ac-inp" min="0" placeholder="0.00" step="0.01">
+        </td>
+        <td>
+            <button class="btn-remove-row" onclick="removeRow(this)">✕</button>
+        </td>
+    `;
+
+    tbody.appendChild(row);
+    refreshPriorityBadges();
+    onComboChange(row);   // register initial combo
+}
+
+function onComboChange(row) {
+    // Release old combo
+    if (row.dataset.combo) usedCombos.delete(row.dataset.combo);
+
+    const proj = row.querySelector('.proj-sel').value;
+    const mod  = row.querySelector('.mod-sel').value;
+    const key  = `${proj}::${mod}`;
+
+    if (usedCombos.has(key)) {
+        // Highlight duplicates
+        row.querySelector('.proj-sel').classList.add('dup-error');
+        row.querySelector('.mod-sel').classList.add('dup-error');
+        row.dataset.combo = "";   // don't claim it
+        showToast(`"${proj} + ${mod}" already used in another row`);
+    } else {
+        row.querySelector('.proj-sel').classList.remove('dup-error');
+        row.querySelector('.mod-sel').classList.remove('dup-error');
+        usedCombos.add(key);
+        row.dataset.combo = key;
+    }
+}
+
+function removeRow(btn) {
+    const row = btn.closest('tr');
+    if (row.dataset.combo) usedCombos.delete(row.dataset.combo);
+    row.style.opacity = '0'; row.style.transform = 'translateX(30px)';
+    setTimeout(() => { row.remove(); refreshPriorityBadges(); }, 300);
+}
+
+function refreshPriorityBadges() {
+    document.querySelectorAll('#table-body tr').forEach((r, i) => {
+        const badge = r.querySelector('.priority-badge');
+        if (badge) badge.textContent = i + 1;
+    });
+}
+
+/* ── Toast ── */
+let toastTimer;
+function showToast(msg) {
+    const t = document.getElementById('dup-toast');
+    t.textContent = `⚠ ${msg}`;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+/* ── Submit ── */
+async function submitDashboardData() {
+    const rows  = document.querySelectorAll('#table-body tr');
+    if (rows.length === 0) { showToast('Add at least one row'); return; }
+
+    // Check for any unresolved duplicates (rows without a registered combo)
+    const hasDup = Array.from(rows).some(r => r.dataset.combo === "");
+    if (hasDup) { showToast('Fix duplicate combinations before submitting'); return; }
+
+    // Build payload
+    const combinations = Array.from(rows).map(r => ({
+        project: r.querySelector('.proj-sel').value,
+        module:  r.querySelector('.mod-sel').value,
+        ac_comp: parseFloat(r.querySelector('.ac-inp').value) || null,
+    }));
+
+    // UI: loading state
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span>Fetching…`;
+    document.getElementById('api-error-banner').style.display = 'none';
+
+    try {
+        const res = await fetch(`${API_BASE}/submit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ combinations }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+       const data = await res.json();
+
+latestSortedRows = Array.isArray(data)
+    ? data
+    : [];
+
+renderResults(
+    latestSortedRows,
+    combinations
+);
+        navigate('dashboard-page','results-page','forward');
+
+    } catch (e) {
+        const banner = document.getElementById('api-error-banner');
+        banner.textContent = `⚠ API Error: ${e.message}`;
+        banner.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = 'Submit &amp; Fetch Results';
+    }
+}
+
+/* ══════════════════════════════════════════════
+   RESULTS RENDERER
+══════════════════════════════════════════════ */
+function renderResults(rows, originalCombos) {
+    sortedRowsForAllocation = Array.isArray(rows) ? rows : [];
+    const container = document.getElementById('results-container');
+    container.innerHTML = '';
+
+    document.getElementById('result-count-badge').textContent =
+        `${rows.length} row${rows.length !== 1 ? 's' : ''}`;
+
+    if (rows.length === 0) {
+        container.innerHTML = `
+            <p style="color:var(--text-muted); text-align:center; margin-top:30px;">
+                No data returned from the database.
+            </p>`;
+        return;
+    }
+
+    // Collect all extra_data keys so every column is shown
+    const extraColumns = [...new Set(
+        rows.flatMap(r => Object.keys(r.extra_data || {}))
+    )];
+
+    let table = `
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Project</th>
+                    <th>Module</th>
+                    <th>Priority</th>
+                    <th>AC_COMP</th>
+                    ${extraColumns.map(col => `<th>${col}</th>`).join("")}
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    rows.forEach(row => {
+        table += `
+            <tr>
+                <td>${row.project}</td>
+                <td>${row.module}</td>
+                <td>${row.priority}</td>
+                <td>${row.ac_comp ?? "-"}</td>
+                ${extraColumns.map(col =>
+                    `<td>${row.extra_data?.[col] ?? "-"}</td>`
+                ).join("")}
+            </tr>
+        `;
+    });
+
+    table += `
+            </tbody>
+        </table>
+    `;
+
+    container.innerHTML = table;
+}
+
+/* ══════════════════════════════════════════════
+   PROCEED FOR ALLOCATION
+══════════════════════════════════════════════ */
+async function proceedForAllocation() {
+
+    const button =
+        document.getElementById(
+            "proceed-allocation-btn"
+        );
+
+    const errorBox =
+        document.getElementById(
+            "allocation-error"
+        );
+
+
+    errorBox.style.display = "none";
+    errorBox.textContent = "";
+
+
+    // --------------------------------------------------------
+    // Safety check
+    // --------------------------------------------------------
+
+    if (
+        !Array.isArray(latestSortedRows) ||
+        latestSortedRows.length === 0
+    ) {
+
+        errorBox.textContent =
+            "No sorted data is available for allocation.";
+
+        errorBox.style.display = "block";
+
+        return;
+    }
+
+
+    // --------------------------------------------------------
+    // Loading state
+    // --------------------------------------------------------
+
+    button.disabled = true;
+
+    button.innerHTML =
+        "⚙ Allocating...";
+
+
+    try {
+
+        console.log(
+            "Sending sorted rows for allocation:",
+            latestSortedRows
+        );
+
+
+        // ----------------------------------------------------
+        // SEND EXACT SORTED ORDER
+        // ----------------------------------------------------
+
+        const response =
+            await fetch(
+                `${ALLOCATION_API_BASE}/allocate`,
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body: JSON.stringify({
+                        rows: latestSortedRows,
+                        user_id: getCurrentUser()?.user_id ?? null
+                    })
+                }
+            );
+
+
+        // ----------------------------------------------------
+        // Read response safely
+        // ----------------------------------------------------
+
+        const result =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                result.detail ||
+                result.message ||
+                `HTTP ${response.status}`
+            );
+        }
+
+
+        if (!result.success) {
+
+            throw new Error(
+                result.message ||
+                "Allocation failed."
+            );
+        }
+
+
+        console.log(
+            "Allocation completed:",
+            result
+        );
+
+
+        // ----------------------------------------------------
+        // Verify allocation results before navigation
+        // ----------------------------------------------------
+
+        const verifyResponse =
+            await fetch(
+                `${ALLOCATION_API_BASE}/allocation-results`,
+                {
+                    method: "GET",
+                    cache: "no-store"
+                }
+            );
+
+
+        if (!verifyResponse.ok) {
+
+            throw new Error(
+                "Allocation completed but results could not be loaded."
+            );
+        }
+
+
+        const verifyData =
+            await verifyResponse.json();
+
+
+        if (
+            !verifyData.success ||
+            !Array.isArray(verifyData.data)
+        ) {
+
+            throw new Error(
+                "Allocation result verification failed."
+            );
+        }
+
+
+        if (verifyData.data.length === 0) {
+
+            throw new Error(
+                "Allocation completed but no allocation rows were returned."
+            );
+        }
+
+
+        // ----------------------------------------------------
+        // NAVIGATE
+        // ----------------------------------------------------
+
+        const allocationDashboard =
+            "../allocation/index.html";
+
+
+        window.location.href =
+            allocationDashboard;
+
+
+    } catch (error) {
+
+        console.error(
+            "Proceed for Allocation failed:",
+            error
+        );
+
+
+        errorBox.textContent =
+            `⚠ Allocation Error: ${error.message}`;
+
+        errorBox.style.display =
+            "block";
+
+
+        button.disabled = false;
+
+        button.innerHTML =
+            "⚙ Proceed for Allocation";
+    }
+}
+
+/* ══════════════════════════════════════════════
+   RESET
+══════════════════════════════════════════════ */
+function resetApp() { window.location.reload(); }
+function resetDashboard() {
+    usedCombos.clear();
+    document.getElementById('table-body').innerHTML = '';
+    addRow();
+}
+
+/* ── Init ── */
+window.onload = () => { addRow(); };
+</script>
+</body>
+</html>

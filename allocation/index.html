@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CNC Machine Allocation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="header-left">
+        <h1>CNC Machine Allocation</h1>
+        <nav class="app-nav">
+          <a href="index.html" class="nav-link active">Allocation</a>
+          <a href="history.html" class="nav-link">History</a>
+        </nav>
+      </div>
+      <div class="header-actions">
+        <button class="btn-manual" id="manualAllocationBtn" type="button">MANUAL ALLOCATION</button>
+        <button class="btn-logout" id="logoutBtn" type="button">LOGOUT</button>
+      </div>
+    </header>
+
+    <div class="schedule-wrapper">
+      <div class="schedule-grid">
+        <div class="machine-list" id="machineList"></div>
+
+        <div class="timeline-body">
+          <div class="timeline-scroll" id="timelineBodyScroll">
+            <div class="timeline-canvas" id="timelineCanvas">
+              <div class="machine-rows" id="machineRows"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="export-section">
+      <!-- <button class="btn-export" id="refreshBtn" type="button">RE-ALLOCATION</button> -->
+      <button class="btn-export" id="exportBtn">EXPORT FILE</button>
+    </div>
+  </div>
+
+  <div class="drag-preview" id="dragPreview" hidden>
+    <div class="preview-part"></div>
+    <div class="preview-time"></div>
+    <div class="preview-status"></div>
+  </div>
+
+  <div class="toast" id="toast" hidden>
+    <div class="toast-icon">⚠</div>
+    <div class="toast-content">
+      <strong id="toastTitle">Allocation Conflict</strong>
+      <p id="toastMessage"></p>
+    </div>
+    <button class="toast-close" id="toastClose">&times;</button>
+  </div>
+
+  <div class="modal-backdrop" id="manualModal" hidden>
+    <section class="manual-modal" role="dialog" aria-modal="true" aria-labelledby="manualModalTitle">
+      <div class="manual-modal-header">
+        <h2 id="manualModalTitle">Manual Allocation</h2>
+        <button type="button" class="modal-close" id="manualModalClose" aria-label="Close">&times;</button>
+      </div>
+      <p class="manual-form-note">Fields below use the existing <code>testdata3</code> column names.</p>
+      <form id="manualAllocationForm">
+        <div class="manual-form-grid" id="manualFormFields"></div>
+        <div class="manual-form-actions">
+          <button type="button" class="btn-secondary" id="manualCancelBtn">CANCEL</button>
+          <button type="submit" class="btn-manual">CREATE ALLOCATION</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CNC Allocation History</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="history.css">
+</head>
+<body>
+  <div class="app history-app">
+    <header class="app-header">
+      <div class="header-left">
+        <h1>CNC Allocation History</h1>
+        <nav class="app-nav">
+          <a href="index.html" class="nav-link">Allocation</a>
+          <a href="history.html" class="nav-link active">History</a>
+        </nav>
+      </div>
+      <div class="header-actions">
+        <button class="btn-export btn-export-header" id="exportBtn">EXPORT FILE ↓</button>
+        <button class="btn-logout" id="logoutBtn" type="button">LOGOUT</button>
+      </div>
+    </header>
+
+    <div class="history-content">
+      <section class="filters-panel">
+        <div class="filters-row">
+          <div class="filter-group">
+            <label for="dateFrom">From Date</label>
+            <input type="date" id="dateFrom" value="2026-08-09">
+          </div>
+          <div class="filter-group">
+            <label for="dateTo">To Date</label>
+            <input type="date" id="dateTo" value="2026-08-09">
+          </div>
+          <div class="filter-actions">
+            <button class="btn-filter" id="applyFilter">Apply Filter</button>
+            <button class="btn-filter btn-filter-secondary" id="clearFilter">Clear Filter</button>
+          </div>
+        </div>
+        <div class="filters-row">
+          <div class="filter-group">
+            <label for="machineFilter">Machine</label>
+            <select id="machineFilter">
+              <option value="">All Machines</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="stageFilter">Stage</label>
+            <select id="stageFilter">
+              <option value="">All Stages</option>
+              <option value="Stage 1">Stage 1</option>
+              <option value="Stage 2">Stage 2</option>
+            </select>
+          </div>
+          <div class="filter-group filter-search">
+            <label for="searchInput">Search</label>
+            <input type="text" id="searchInput" placeholder="Search Part Number...">
+          </div>
+        </div>
+      </section>
+
+      <section class="table-section">
+        <div class="table-header-bar">
+          <h2>Completed Allocations</h2>
+          <span class="record-count" id="recordCount"></span>
+        </div>
+
+        <div class="empty-state" id="emptyState" hidden>
+          <div class="empty-icon">📋</div>
+          <h3>No History Yet</h3>
+          <p>Completed machine allocations will appear here once a job is finished on the Allocation page.</p>
+        </div>
+
+        <div class="empty-state empty-filtered" id="emptyFiltered" hidden>
+          <div class="empty-icon">🔍</div>
+          <h3>No Matching Records</h3>
+          <p>No completed allocations match your current filters. Try adjusting the filters or search term.</p>
+        </div>
+
+        <div class="table-wrapper" id="tableWrapper">
+          <table class="history-table" id="historyTable">
+            <thead>
+              <tr>
+                <th class="col-sr">SR</th>
+                <th data-sort="partNo">Part Number <span class="sort-icon"></span></th>
+                <th data-sort="project">Project <span class="sort-icon"></span></th>
+                <th data-sort="module">Module <span class="sort-icon"></span></th>
+                <th data-sort="quantity">Quantity <span class="sort-icon"></span></th>
+                <th data-sort="priority">Priority <span class="sort-icon"></span></th>
+                <th data-sort="machine">Machine <span class="sort-icon"></span></th>
+                <th data-sort="stage">Stage <span class="sort-icon"></span></th>
+                <th data-sort="startDate">Scheduled Start <span class="sort-icon"></span></th>
+                <th data-sort="endDate">Scheduled End <span class="sort-icon"></span></th>
+                <th>Estimated Start <span class="sort-icon"></span></th>
+                <th>Estimated End <span class="sort-icon"></span></th>
+                <th data-sort="duration">Duration <span class="sort-icon"></span></th>
+                <th>Actual Start <span class="sort-icon"></span></th>
+                <th>Actual End <span class="sort-icon"></span></th>
+                <th data-sort="status">Status <span class="sort-icon"></span></th>
+              </tr>
+            </thead>
+            <tbody id="historyTableBody"></tbody>
+          </table>
+        </div>
+
+        <div class="pagination" id="pagination" hidden>
+          <span class="pagination-info" id="paginationInfo"></span>
+          <div class="pagination-controls">
+            <button class="page-btn" id="prevPage" disabled>← Previous</button>
+            <div class="page-numbers" id="pageNumbers"></div>
+            <button class="page-btn" id="nextPage">Next →</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="history.js"></script>
+</body>
+</html>

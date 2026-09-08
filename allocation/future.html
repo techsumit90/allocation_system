@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CNC Future Allotment Plan</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="future.css">
+</head>
+<body>
+  <div class="app future-app">
+    <header class="app-header">
+      <div class="header-left">
+        <h1>CNC Future Allotment Plan</h1>
+        <nav class="app-nav">
+          <a href="index.html" class="nav-link">Allocation</a>
+          <a href="history.html" class="nav-link">History</a>
+          <a href="future.html" class="nav-link active">Future Plan</a>
+        </nav>
+      </div>
+      <button class="btn-export btn-export-header" id="exportBtn">EXPORT FILE ↓</button>
+    </header>
+
+    <div class="future-content">
+      <section class="filters-panel future-filters">
+        <div class="filters-row">
+          <div class="filter-group">
+            <label for="dateFrom">From Date</label>
+            <input type="date" id="dateFrom">
+          </div>
+          <div class="filter-group">
+            <label for="dateTo">To Date</label>
+            <input type="date" id="dateTo">
+          </div>
+          <div class="filter-group">
+            <label for="projectFilter">Project</label>
+            <select id="projectFilter">
+              <option value="">All Projects</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="stageFilter">Stage</label>
+            <select id="stageFilter">
+              <option value="">All Stages</option>
+              <option value="Stage 1">Stage 1</option>
+              <option value="Stage 2">Stage 2</option>
+            </select>
+          </div>
+          <div class="filter-group filter-search">
+            <label for="searchInput">Search</label>
+            <input type="text" id="searchInput" placeholder="Part number, machine, module...">
+          </div>
+          <div class="filter-actions">
+            <button class="btn-filter" id="applyFilter">Apply Filter</button>
+            <button class="btn-filter btn-filter-secondary" id="clearFilter">Clear Filter</button>
+          </div>
+        </div>
+        <div class="stage-legend">
+          <span class="legend-item"><span class="legend-swatch stage-1"></span> Stage 1 Machine</span>
+          <span class="legend-item"><span class="legend-swatch stage-2"></span> Stage 2 Machine</span>
+        </div>
+      </section>
+
+      <section class="excel-section">
+        <div class="excel-toolbar">
+          <h2>Upcoming Machine Allotments</h2>
+          <span class="record-count" id="recordCount"></span>
+        </div>
+
+        <div class="excel-wrapper" id="excelWrapper">
+          <table class="excel-table" id="excelTable">
+            <thead>
+              <tr>
+                <th class="col-sr">SR</th>
+                <th>Part Number</th>
+                <th>Project</th>
+                <th>Module</th>
+                <th>Priority</th>
+                <th class="col-stage1">Machine Stage 1</th>
+                <th class="col-stage1">Machine Stage 1 Alt</th>
+                <th class="col-stage2">Machine Stage 2</th>
+                <th class="col-stage2">Machine Stage 2 Alt</th>
+                <th>Batch Qty</th>
+                <th class="col-stage1">S1 Setup</th>
+                <th class="col-stage1">S1 Unit</th>
+                <th class="col-stage1">SMH S1</th>
+                <th class="col-stage2">S2 Setup</th>
+                <th class="col-stage2">S2 Unit</th>
+                <th class="col-stage2">SMH S2</th>
+                <th>AC Comp</th>
+                <th>Final SMH</th>
+                <th>Scheduled Date</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="excelTableBody"></tbody>
+          </table>
+        </div>
+
+        <div class="pagination" id="pagination" hidden>
+          <span class="pagination-info" id="paginationInfo"></span>
+          <div class="pagination-controls">
+            <button class="page-btn" id="prevPage" disabled>← Previous</button>
+            <div class="page-numbers" id="pageNumbers"></div>
+            <button class="page-btn" id="nextPage">Next →</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <button id="logoutBtn" type="button" style="position:fixed;left:20px;bottom:20px;z-index:20;padding:10px 16px;cursor:pointer;">LOGOUT</button>
+
+  <script src="data.js"></script>
+  <script src="future.js"></script>
+</body>
+</html>

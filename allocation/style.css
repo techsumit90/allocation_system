@@ -330,9 +330,9 @@ body {
 
 .maintenance-label {
   position: absolute;
-  top: 50%;
+  top: 6px;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translateX(-50%);
   background: var(--maintenance);
   color: white;
   font-size: 0.72rem;
@@ -530,6 +530,31 @@ body {
   border-left: 4px solid var(--stage2-header);
 }
 
+/* Parts on a maintenance machine stay allocated, turn red, and stop. */
+.allocation-box.maintenance-part {
+  background: #fee2e2;
+  border-color: #f87171;
+  border-left: 4px solid var(--maintenance);
+  cursor: grab;
+}
+.allocation-box.maintenance-part .alloc-part-no {
+  color: #991b1b;
+}
+.allocation-box.maintenance-part .alloc-stage {
+  background: #fecaca;
+  color: #7f1d1d;
+}
+
+/* After a valid drop onto a working machine, the part is green again. */
+.allocation-box.active-machine-part {
+  background: var(--running-bg);
+  border-color: #86efac;
+  border-left: 4px solid var(--running);
+}
+.allocation-box.active-machine-part .alloc-part-no {
+  color: var(--running);
+}
+
 .allocation-box.queue-running {
   border-width: 2px;
   box-shadow: 0 0 0 2px rgba(5, 150, 105, 0.2), var(--shadow-md);
@@ -654,6 +679,11 @@ body {
 .alloc-status-badge.waiting {
   background: #f1f5f9;
   color: var(--text-secondary);
+}
+
+.alloc-status-badge.stopped {
+  background: var(--maintenance-bg);
+  color: var(--maintenance);
 }
 
 .alloc-status-badge.running::before {

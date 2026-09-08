@@ -23,7 +23,8 @@ async function loadHistoryData() {
     startDate:String(row.scheduled_start || '').slice(0,10), startTime:String(row.scheduled_start || '').slice(11,16),
     endDate:String(row.scheduled_end || '').slice(0,10), endTime:String(row.scheduled_end || '').slice(11,16),
     estimatedStartTime:String(row.scheduled_start || '').slice(11,16), estimatedEndTime:String(row.scheduled_end || '').slice(11,16),
-    actualStart:row.actual_start, actualEnd:row.actual_end, completedAt:row.completed_at, status:'completed'
+    actualStart:row.actual_start, actualEnd:row.actual_end, completedAt:row.completed_at, status:'completed',
+    workOrder:row.work_order || ''
   }))};
 }
 
@@ -44,7 +45,8 @@ function applyFilters() {
       r.partNo.toLowerCase().includes(q) ||
       r.machine.toLowerCase().includes(q) ||
       (r.project && r.project.toLowerCase().includes(q)) ||
-      (r.module  && r.module.toLowerCase().includes(q))
+      (r.module  && r.module.toLowerCase().includes(q)) ||
+      (r.workOrder && String(r.workOrder).toLowerCase().includes(q))
     );
   }
   records.sort((a, b) => compareRecords(a, b, state.sort.field, state.sort.direction));
@@ -113,6 +115,7 @@ function renderTable() {
       <td>${record.priority ?? '—'}</td>
       <td>${record.machine}</td>
       <td><span class="stage-badge ${sc}">${record.stage}</span></td>
+      <td>${record.workOrder ? record.workOrder : '—'}</td>
       <td>${formatDisplayDate(record.startDate)}, ${formatTime12(record.startTime)}</td>
       <td>${formatDisplayDate(record.endDate)}, ${formatTime12(record.endTime)}</td>
       <td>${formatTime12(record.estimatedStartTime)}</td>
@@ -204,11 +207,11 @@ function downloadXls(filename, headers, rows) {
 function exportHistoryFile() {
   readFilters(); applyFilters();
   // Estimated Start/End are duplicates of Scheduled Start/End — omitted to keep export clean.
-  const headers = ['SR','Part Number','Project','Module','Quantity','Priority','Machine','Stage',
+  const headers = ['SR','Part Number','Project','Module','Quantity','Priority','Machine','Stage','Work Order',
     'Scheduled Start','Scheduled End','Duration','Actual Start','Actual End','Status'];
   const rows = state.filteredRecords.map((r, idx) => [
     idx + 1,
-    r.partNo, r.project||'', r.module||'', r.quantity??'', r.priority??'', r.machine, r.stage,
+    r.partNo, r.project||'', r.module||'', r.quantity??'', r.priority??'', r.machine, r.stage, r.workOrder||'',
     `${formatDisplayDate(r.startDate)}, ${formatTime12(r.startTime)}`,
     `${formatDisplayDate(r.endDate)}, ${formatTime12(r.endTime)}`,
     getDurationLabel(r), r.status.toUpperCase(),

@@ -252,6 +252,9 @@ def ensure_allocation_table(cursor) -> None:
         "STAGE1_unit_time": "DECIMAL(12,2) DEFAULT NULL",
         "STAGE2_setup_time": "DECIMAL(12,2) DEFAULT NULL",
         "STAGE2_unit_time": "DECIMAL(12,2) DEFAULT NULL",
+        "work_order": "VARCHAR(150) DEFAULT NULL",
+        "is_completed": "TINYINT(1) NOT NULL DEFAULT 0",
+        "batch_id": "INT DEFAULT NULL",
     }
     for name, definition in additions.items():
         if name not in columns:
@@ -281,6 +284,10 @@ def ensure_history_table(cursor) -> None:
             UNIQUE KEY uq_completed_operation (allocation_id, stage)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """)
+    cursor.execute("SHOW COLUMNS FROM allocation_history")
+    history_columns = {row[0] if not isinstance(row, dict) else row["Field"] for row in cursor.fetchall()}
+    if "work_order" not in history_columns:
+        cursor.execute("ALTER TABLE allocation_history ADD COLUMN work_order VARCHAR(150) DEFAULT NULL")
 
 
 
@@ -1183,8 +1190,15 @@ def move_board_operation(allocation_id: int, payload: BoardMove):
     cursor = connection.cursor(dictionary=True)
     try:
         ensure_allocation_table(cursor)
+        ensure_machine_maintenance_table(cursor)
         if payload.target_machine not in source_machines(cursor):
             raise HTTPException(status_code=422, detail="Target machine is not present in testdata3.")
+        cursor.execute(
+            "SELECT 1 FROM machine_maintenance WHERE machine_id=%s AND is_maintenance=1",
+            (payload.target_machine,),
+        )
+        if cursor.fetchone():
+            raise HTTPException(status_code=409, detail=f"{payload.target_machine} is under maintenance.")
         cursor.execute(f"SELECT {machine_col} machine, PART_NO FROM allocation_result WHERE id=%s", (allocation_id,))
         found = cursor.fetchone()
         if not found or not found["machine"]:
@@ -1426,12 +1440,13 @@ def complete_operation(allocation_id: int, payload: BoardOperationUpdate):
         cursor.execute(f"UPDATE allocation_result SET {prefix}_status='completed', {prefix}_actual_end=%s WHERE id=%s", (actual_end, allocation_id))
         cursor.execute("""INSERT INTO allocation_history (
             allocation_id, stage, part_no, project, module, priority, batch_qty, machine,
-            scheduled_start, scheduled_end, actual_start, actual_end, completed_at
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON DUPLICATE KEY UPDATE actual_end=VALUES(actual_end), completed_at=VALUES(completed_at)""",
+            scheduled_start, scheduled_end, actual_start, actual_end, completed_at, work_order
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE actual_end=VALUES(actual_end), completed_at=VALUES(completed_at), work_order=VALUES(work_order)""",
         (allocation_id, payload.stage, row["PART_NO"], row["PROJECT"], row["MODULE"], row["PRIORITY"], row.get("BATCH_QTY"),
          row["selected_stage1_machine"] if stage_one else row["selected_stage2_machine"],
-         row[f"{prefix}_start"], row[f"{prefix}_end"], row.get(f"{prefix}_actual_start"), actual_end, actual_end))
+         row[f"{prefix}_start"], row[f"{prefix}_end"], row.get(f"{prefix}_actual_start"), actual_end, actual_end,
+         row.get("work_order")))
         # Completed cards leave the active board queue, so cascade the
         # remaining cards on that same machine from their retained anchor.
         recalculate_machine_queues(cursor, stage_one, [row["selected_stage1_machine"] if stage_one else row["selected_stage2_machine"]])
@@ -1518,8 +1533,21 @@ def set_machine_maintenance(machine_id: str):
     connection=get_connection(); cursor=connection.cursor()
     try:
         ensure_machine_maintenance_table(cursor)
+        ensure_allocation_table(cursor)
         cursor.execute("INSERT INTO machine_maintenance(machine_id,is_maintenance,updated_at) VALUES(%s,1,%s) ON DUPLICATE KEY UPDATE is_maintenance=1,updated_at=VALUES(updated_at)",(machine_id,ist_now()))
+        # Halt running work on this machine but keep every part allocated here.
+        cursor.execute(
+            "UPDATE allocation_result SET stage1_status='idle' WHERE selected_stage1_machine=%s AND stage1_status='running'",
+            (machine_id,),
+        )
+        cursor.execute(
+            "UPDATE allocation_result SET stage2_status='idle' WHERE selected_stage2_machine=%s AND stage2_status='running'",
+            (machine_id,),
+        )
         connection.commit(); return {"success":True,"machine":machine_id,"maintenance":True}
+    except Exception:
+        connection.rollback()
+        raise
     finally: cursor.close(); connection.close()
 
 @app.delete("/allocation-machines/{machine_id}/maintenance")

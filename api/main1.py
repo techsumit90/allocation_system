@@ -1,4 +1,5 @@
 from datetime import date, datetime, time, timedelta
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 import os
@@ -38,8 +39,12 @@ DB_CONFIG = {
     "database": os.getenv("DB_NAME", "cnc_job_scheduler"),
 }
 
-ALLOCATION_START_HOUR = int(os.getenv("ALLOCATION_START_HOUR", "8"))
+# Machine working window: 07:00–23:00 (16 hours). Overnight continuous
+# arithmetic is incorrect; scheduling helpers below consume only this window.
+ALLOCATION_START_HOUR = int(os.getenv("ALLOCATION_START_HOUR", "7"))
 ALLOCATION_START_MINUTE = int(os.getenv("ALLOCATION_START_MINUTE", "0"))
+ALLOCATION_END_HOUR = int(os.getenv("ALLOCATION_END_HOUR", "23"))
+ALLOCATION_END_MINUTE = int(os.getenv("ALLOCATION_END_MINUTE", "0"))
 
 
 class SortedRow(BaseModel):
@@ -80,6 +85,7 @@ class ManualAllocation(BaseModel):
     values: Dict[str, Any]
     stage: str
     selected_machine: Optional[str] = None
+    selected_stage2_machine: Optional[str] = None
 
 
 class NewManualAllocation(BaseModel):
@@ -166,6 +172,71 @@ def build_start_datetime() -> datetime:
         today,
         time(ALLOCATION_START_HOUR, ALLOCATION_START_MINUTE),
     )
+
+
+def work_start_time() -> time:
+    return time(ALLOCATION_START_HOUR, ALLOCATION_START_MINUTE)
+
+
+def work_end_time() -> time:
+    return time(ALLOCATION_END_HOUR, ALLOCATION_END_MINUTE)
+
+
+def align_to_working_start(proposed: Optional[datetime]) -> datetime:
+    """Move a timestamp into the 07:00–23:00 machine window.
+
+    Before 07:00 → same day 07:00.
+    At or after 23:00 → next calendar day 07:00.
+    Working-day exclusions are not added here; the project has no Sunday-off
+    calendar configured, so that rule is left unchanged.
+    """
+    start = proposed or build_start_datetime()
+    if getattr(start, "tzinfo", None) is not None:
+        start = start.replace(tzinfo=None)
+    window_start = datetime.combine(start.date(), work_start_time())
+    window_end = datetime.combine(start.date(), work_end_time())
+    if start < window_start:
+        return window_start
+    if start >= window_end:
+        return datetime.combine(start.date() + timedelta(days=1), work_start_time())
+    return start
+
+
+def remaining_working_hours(moment: datetime) -> float:
+    aligned = align_to_working_start(moment)
+    window_end = datetime.combine(aligned.date(), work_end_time())
+    return max(0.0, (window_end - aligned).total_seconds() / 3600.0)
+
+
+def calculate_working_schedule(start_datetime: Optional[datetime], required_hours: float) -> Tuple[datetime, datetime]:
+    """Return (aligned_start, working_end) consuming only 07:00–23:00 hours."""
+    hours = max(0.0, to_float(required_hours))
+    start = align_to_working_start(start_datetime)
+    if hours <= 0:
+        return start, start
+    remaining = hours
+    cursor = start
+    while remaining > 1e-9:
+        cursor = align_to_working_start(cursor)
+        day_left = remaining_working_hours(cursor)
+        if day_left <= 1e-9:
+            cursor = datetime.combine(cursor.date() + timedelta(days=1), work_start_time())
+            continue
+        consume = min(remaining, day_left)
+        cursor = cursor + timedelta(hours=consume)
+        remaining -= consume
+        if remaining > 1e-9:
+            cursor = datetime.combine(cursor.date() + timedelta(days=1), work_start_time())
+    return start, cursor
+
+
+def calculate_working_end(start_datetime: Optional[datetime], required_hours: float) -> datetime:
+    """End timestamp after consuming required_hours inside the working window."""
+    _, end = calculate_working_schedule(start_datetime, required_hours)
+    return end
+
+
+SCHEDULE_START = build_start_datetime()
 
 
 def choose_machine(primary: Any, alternative: Any) -> Optional[str]:
@@ -255,6 +326,9 @@ def ensure_allocation_table(cursor) -> None:
         "work_order": "VARCHAR(150) DEFAULT NULL",
         "is_completed": "TINYINT(1) NOT NULL DEFAULT 0",
         "batch_id": "INT DEFAULT NULL",
+        "allocation_session_id": "VARCHAR(64) DEFAULT NULL",
+        "is_carried_forward": "TINYINT(1) NOT NULL DEFAULT 0",
+        "is_dismissed": "TINYINT(1) NOT NULL DEFAULT 0",
     }
     for name, definition in additions.items():
         if name not in columns:
@@ -397,7 +471,24 @@ def active_part_numbers(cursor, part_nos: List[str]) -> set:
         return set()
     placeholders = ",".join(["%s"] * len(part_nos))
     cursor.execute(
-        f"SELECT DISTINCT PART_NO AS part_no FROM allocation_result WHERE PART_NO IN ({placeholders}) AND is_completed=0",
+        f"""SELECT DISTINCT PART_NO AS part_no FROM allocation_result
+            WHERE PART_NO IN ({placeholders}) AND is_completed=0
+              AND COALESCE(is_dismissed, 0)=0""",
+        tuple(part_nos),
+    )
+    return {r["part_no"] for r in cursor.fetchall()}
+
+
+def dismissed_part_numbers(cursor, part_nos: List[str]) -> set:
+    """Parts removed with the card × control. They must not return on a later
+    /allocate unless a new manual allocation creates a fresh row."""
+    part_nos = [p for p in dict.fromkeys(part_nos) if p]
+    if not part_nos:
+        return set()
+    placeholders = ",".join(["%s"] * len(part_nos))
+    cursor.execute(
+        f"""SELECT DISTINCT PART_NO AS part_no FROM allocation_result
+            WHERE PART_NO IN ({placeholders}) AND COALESCE(is_dismissed, 0)=1""",
         tuple(part_nos),
     )
     return {r["part_no"] for r in cursor.fetchall()}
@@ -409,11 +500,11 @@ def seed_machine_available_from_active_rows(cursor) -> None:
     global machine_available
     cursor.execute("""
         SELECT selected_stage1_machine AS machine, MAX(stage1_end) AS latest FROM allocation_result
-        WHERE selected_stage1_machine IS NOT NULL AND is_completed=0
+        WHERE selected_stage1_machine IS NOT NULL AND is_completed=0 AND COALESCE(is_dismissed,0)=0
         GROUP BY selected_stage1_machine
         UNION ALL
         SELECT selected_stage2_machine AS machine, MAX(stage2_end) AS latest FROM allocation_result
-        WHERE selected_stage2_machine IS NOT NULL AND is_completed=0
+        WHERE selected_stage2_machine IS NOT NULL AND is_completed=0 AND COALESCE(is_dismissed,0)=0
         GROUP BY selected_stage2_machine
     """)
     for row in cursor.fetchall():
@@ -433,10 +524,12 @@ def recalculate_machine_queues(cursor, stage_one: bool, machines: List[str]) -> 
         SELECT operation.id, 'stage1' AS stage, operation.selected_stage1_machine AS machine,
                operation.stage1_start AS start_time, operation.stage1_end AS end_time,
                operation.queue_position, operation.stage1_queue_position AS stage_queue_position,
-               operation.STAGE1_SMH AS duration_hours, NULL AS stage1_ready_at
+               operation.STAGE1_SMH AS duration_hours, NULL AS stage1_ready_at,
+               COALESCE(operation.stage1_status, 'idle') AS operation_status
         FROM allocation_result operation
         WHERE operation.selected_stage1_machine IN ({placeholders})
           AND COALESCE(operation.stage1_status, 'idle') <> 'completed'
+          AND COALESCE(operation.is_dismissed, 0) = 0
         UNION ALL
         SELECT operation.id, 'stage2' AS stage, operation.selected_stage2_machine AS machine,
                operation.stage2_start AS start_time, operation.stage2_end AS end_time,
@@ -447,10 +540,13 @@ def recalculate_machine_queues(cursor, stage_one: bool, machines: List[str]) -> 
                    FROM allocation_result stage1_operation
                    WHERE stage1_operation.PART_NO = operation.PART_NO
                      AND stage1_operation.stage1_end IS NOT NULL
-               )) AS stage1_ready_at
+                     AND COALESCE(stage1_operation.is_dismissed, 0) = 0
+               )) AS stage1_ready_at,
+               COALESCE(operation.stage2_status, 'idle') AS operation_status
         FROM allocation_result operation
         WHERE operation.selected_stage2_machine IN ({placeholders})
           AND COALESCE(operation.stage2_status, 'idle') <> 'completed'
+          AND COALESCE(operation.is_dismissed, 0) = 0
     """, tuple(machines) + tuple(machines))
     by_machine: Dict[str, List[Dict[str, Any]]] = {}
     for operation in cursor.fetchall():
@@ -466,22 +562,29 @@ def recalculate_machine_queues(cursor, stage_one: bool, machines: List[str]) -> 
         # A queue is always rebuilt from the configured schedule start.  Using
         # an operation's previous start here leaked its old-machine timestamp
         # into a newly selected machine after a drag/drop.
-        current = build_start_datetime()
+        current = align_to_working_start(build_start_datetime())
+        for operation in queue:
+            if operation.get("operation_status") == "running" and operation.get("end_time"):
+                current = align_to_working_start(max(current, operation["end_time"]))
         for position, operation in enumerate(queue, start=1):
             if operation["stage1_ready_at"]:
-                current = max(current, operation["stage1_ready_at"])
-            duration = (
-                operation["end_time"] - operation["start_time"]
-                if operation["start_time"] and operation["end_time"]
-                else timedelta(hours=to_float(operation["duration_hours"]))
-            )
-            end = current + duration
+                current = align_to_working_start(max(current, operation["stage1_ready_at"]))
+            duration_hours = to_float(operation["duration_hours"])
+            if duration_hours <= 0 and operation["start_time"] and operation["end_time"]:
+                duration_hours = max(
+                    0.0,
+                    (operation["end_time"] - operation["start_time"]).total_seconds() / 3600.0,
+                )
+            if operation.get("operation_status") == "running" and operation["start_time"] and operation["end_time"]:
+                start, end = operation["start_time"], operation["end_time"]
+            else:
+                start, end = calculate_working_schedule(current, duration_hours)
             prefix = operation["stage"]
             cursor.execute(f"""UPDATE allocation_result
                 SET queue_position=%s, {prefix}_queue_position=%s,
                     {prefix}_start=%s, {prefix}_end=%s
-                WHERE id=%s""", (position, position, current, end, operation["id"]))
-            current = end
+                WHERE id=%s""", (position, position, start, end, operation["id"]))
+            current = align_to_working_start(end)
 
 
 def recalculate_stage2_dependencies(cursor, part_nos: Optional[List[str]] = None) -> None:
@@ -522,9 +625,11 @@ def machine_queue_depths(cursor) -> Dict[str, int]:
     cursor.execute("""SELECT machine, COUNT(DISTINCT allocation_id) AS depth FROM (
         SELECT id AS allocation_id, selected_stage1_machine AS machine FROM allocation_result
         WHERE selected_stage1_machine IS NOT NULL AND COALESCE(stage1_status, 'idle') <> 'completed'
+          AND COALESCE(is_dismissed, 0) = 0
         UNION ALL
         SELECT id AS allocation_id, selected_stage2_machine AS machine FROM allocation_result
         WHERE selected_stage2_machine IS NOT NULL AND COALESCE(stage2_status, 'idle') <> 'completed'
+          AND COALESCE(is_dismissed, 0) = 0
     ) active_operations GROUP BY machine""")
     return {row["machine"]: int(row["depth"]) for row in cursor.fetchall()}
 
@@ -533,20 +638,56 @@ def machine_next_start(cursor, machine: str, ready_at: Optional[datetime] = None
     cursor.execute("""SELECT MAX(end_time) AS latest FROM (
         SELECT stage1_end AS end_time FROM allocation_result
         WHERE selected_stage1_machine=%s AND COALESCE(stage1_status, 'idle') <> 'completed'
+          AND COALESCE(is_dismissed, 0) = 0
         UNION ALL
         SELECT stage2_end AS end_time FROM allocation_result
         WHERE selected_stage2_machine=%s AND COALESCE(stage2_status, 'idle') <> 'completed'
+          AND COALESCE(is_dismissed, 0) = 0
     ) scheduled_operations""", (machine, machine))
     latest = cursor.fetchone()["latest"]
-    return max(build_start_datetime(), latest or build_start_datetime(), ready_at or build_start_datetime())
+    proposed = max(
+        build_start_datetime(),
+        latest or build_start_datetime(),
+        ready_at or build_start_datetime(),
+    )
+    return align_to_working_start(proposed)
 
 
 def machine_next_position(cursor, machine: str) -> int:
     cursor.execute("""SELECT COALESCE(MAX(queue_position), 0) AS last_position FROM allocation_result
-        WHERE (selected_stage1_machine=%s AND COALESCE(stage1_status, 'idle') <> 'completed')
-           OR (selected_stage2_machine=%s AND COALESCE(stage2_status, 'idle') <> 'completed')""",
+        WHERE COALESCE(is_dismissed, 0) = 0 AND (
+              (selected_stage1_machine=%s AND COALESCE(stage1_status, 'idle') <> 'completed')
+           OR (selected_stage2_machine=%s AND COALESCE(stage2_status, 'idle') <> 'completed')
+        )""",
         (machine, machine))
     return int(cursor.fetchone()["last_position"] or 0) + 1
+
+
+def schedule_after_machine(
+    cursor,
+    machine: str,
+    duration_hours: float,
+    ready_at: Optional[datetime] = None,
+    excluded_id: int = 0,
+) -> Tuple[datetime, datetime]:
+    cursor.execute("""SELECT MAX(end_time) latest FROM (
+        SELECT stage1_end AS end_time FROM allocation_result
+        WHERE selected_stage1_machine=%s AND id<>%s
+          AND COALESCE(stage1_status, 'idle') <> 'completed'
+          AND COALESCE(is_dismissed, 0) = 0
+        UNION ALL
+        SELECT stage2_end AS end_time FROM allocation_result
+        WHERE selected_stage2_machine=%s AND id<>%s
+          AND COALESCE(stage2_status, 'idle') <> 'completed'
+          AND COALESCE(is_dismissed, 0) = 0
+    ) machine_operations""", (machine, excluded_id, machine, excluded_id))
+    latest = cursor.fetchone()["latest"]
+    start = align_to_working_start(max(
+        latest or build_start_datetime(),
+        ready_at or build_start_datetime(),
+        build_start_datetime(),
+    ))
+    return calculate_working_schedule(start, duration_hours)
 
 
 def choose_next_machine(cursor, primary: Any, alternative: Any, ready_at: Optional[datetime] = None) -> Optional[str]:
@@ -586,14 +727,14 @@ def promote_future_row(cursor, row: Dict[str, Any], target_machine: str) -> List
     )
     stage1_duration = to_float(row.get("STAGE1_smh"))
     stage1_start = machine_next_start(cursor, stage1_machine) if stage1_machine and stage1_duration > 0 else None
-    stage1_end = stage1_start + timedelta(hours=stage1_duration) if stage1_start else None
+    stage1_end = calculate_working_end(stage1_start, stage1_duration) if stage1_start else None
 
     stage2_machine = target_machine if target_machine in s2_candidates else choose_next_machine(
         cursor, row.get("machine_STAGE2"), row.get("machine_STAGE2_A"), stage1_end
     )
     stage2_duration = to_float(row.get("STAGE2_smh"))
     stage2_start = machine_next_start(cursor, stage2_machine, stage1_end) if stage2_machine and stage2_duration > 0 else None
-    stage2_end = stage2_start + timedelta(hours=stage2_duration) if stage2_start else None
+    stage2_end = calculate_working_end(stage2_start, stage2_duration) if stage2_start else None
 
     if target_machine not in {stage1_machine, stage2_machine}:
         return []
@@ -735,6 +876,11 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
         # that are genuinely new, skipping parts that are already completed or
         # already have an active (non-completed) allocation row.
         batch_id = get_or_create_active_batch(cursor, user_id)
+        session_id = uuid4().hex
+        cursor.execute(
+            """UPDATE allocation_result SET is_carried_forward=1
+               WHERE is_completed=0 AND COALESCE(is_dismissed,0)=0"""
+        )
         seed_machine_available_from_active_rows(cursor)
 
         candidate_part_nos = []
@@ -745,15 +891,16 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
 
         completed = completed_part_numbers(cursor, candidate_part_nos)
         already_active = active_part_numbers(cursor, candidate_part_nos)
+        dismissed = dismissed_part_numbers(cursor, candidate_part_nos)
 
         # Highest existing queue position per machine, so appended rows extend
         # the queue instead of resetting stage/queue positions to start at 1.
         cursor.execute("""SELECT machine, MAX(pos) AS last_pos FROM (
             SELECT selected_stage1_machine AS machine, stage1_queue_position AS pos FROM allocation_result
-            WHERE selected_stage1_machine IS NOT NULL AND is_completed=0
+            WHERE selected_stage1_machine IS NOT NULL AND is_completed=0 AND COALESCE(is_dismissed,0)=0
             UNION ALL
             SELECT selected_stage2_machine AS machine, stage2_queue_position AS pos FROM allocation_result
-            WHERE selected_stage2_machine IS NOT NULL AND is_completed=0
+            WHERE selected_stage2_machine IS NOT NULL AND is_completed=0 AND COALESCE(is_dismissed,0)=0
         ) existing GROUP BY machine""")
         queue_positions: Dict[str, int] = {r["machine"]: int(r["last_pos"] or 0) for r in cursor.fetchall() if r["machine"]}
 
@@ -772,6 +919,9 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
             if row["PART_NO"] in already_active:
                 skipped_duplicate.append(row["PART_NO"])
                 continue
+            if row["PART_NO"] in dismissed:
+                skipped_duplicate.append(row["PART_NO"])
+                continue
 
             stage1_machine = choose_machine(
                 row["machine_STAGE1"], row["machine_STAGE1_A"]
@@ -780,8 +930,10 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
             stage1_end = None
 
             if stage1_machine:
-                stage1_start = machine_available.get(stage1_machine, SCHEDULE_START)
-                stage1_end = stage1_start + timedelta(hours=row["STAGE1_SMH"])
+                stage1_start = align_to_working_start(
+                    machine_available.get(stage1_machine, SCHEDULE_START)
+                )
+                stage1_start, stage1_end = calculate_working_schedule(stage1_start, row["STAGE1_SMH"])
                 machine_available[stage1_machine] = stage1_end
                 queue_positions[stage1_machine] = queue_positions.get(stage1_machine, 0) + 1
                 stage1_queue_position = queue_positions[stage1_machine]
@@ -791,14 +943,16 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
             stage2_machine = choose_machine(
                 row["machine_STAGE2"], row["machine_STAGE2_A"]
             )
+            if stage2_machine and row["STAGE2_SMH"] <= 0:
+                stage2_machine = None
             stage2_start = None
             stage2_end = None
 
             if stage2_machine:
                 machine_ready = machine_available.get(stage2_machine, SCHEDULE_START)
                 part_ready = stage1_end or SCHEDULE_START
-                stage2_start = max(machine_ready, part_ready)
-                stage2_end = stage2_start + timedelta(hours=row["STAGE2_SMH"])
+                stage2_start = align_to_working_start(max(machine_ready, part_ready))
+                stage2_start, stage2_end = calculate_working_schedule(stage2_start, row["STAGE2_SMH"])
                 machine_available[stage2_machine] = stage2_end
                 queue_positions[stage2_machine] = queue_positions.get(stage2_machine, 0) + 1
                 stage2_queue_position = queue_positions[stage2_machine]
@@ -820,7 +974,8 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
                     selected_stage1_machine, selected_stage2_machine,
                     stage1_start, stage1_end, stage2_start, stage2_end,
                     status, queue_position, stage1_queue_position,
-                    stage2_queue_position, planned_start, planned_end, batch_id
+                    stage2_queue_position, planned_start, planned_end, batch_id,
+                    allocation_session_id, is_carried_forward
                 ) VALUES (
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
@@ -830,7 +985,8 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
                     %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s,
-                    %s, %s, %s, %s
+                    %s, %s, %s, %s,
+                    %s, 0
                 )
                 """,
                 (
@@ -845,7 +1001,7 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
                     status,
                     max(stage1_queue_position or 0, stage2_queue_position or 0) or None,
                     stage1_queue_position, stage2_queue_position,
-                    planned_start, planned_end, batch_id,
+                    planned_start, planned_end, batch_id, session_id,
                 ),
             )
             processed += 1
@@ -935,7 +1091,7 @@ def get_active_batch(user_id: Optional[int] = None):
         batch = cursor.fetchone()
         if not batch:
             return {"success": True, "has_active_batch": False, "batch": None, "data": []}
-        cursor.execute("SELECT * FROM allocation_result WHERE batch_id=%s ORDER BY id ASC", (batch["batch_id"],))
+        cursor.execute("SELECT * FROM allocation_result WHERE batch_id=%s AND COALESCE(is_dismissed,0)=0 ORDER BY id ASC", (batch["batch_id"],))
         rows = cursor.fetchall()
         return {"success": True, "has_active_batch": True, "batch": batch, "data": rows}
     finally:
@@ -998,13 +1154,14 @@ def allocation_results():
                 BATCH_QTY, STAGE1_setup_time, STAGE1_unit_time,
                 STAGE2_setup_time, STAGE2_unit_time,
                 work_order, is_completed, batch_id,
+                allocation_session_id, is_carried_forward, is_dismissed,
                 EXISTS(
                     SELECT 1 FROM allocation_result completed_s1
                     WHERE completed_s1.PART_NO = allocation_result.PART_NO
                       AND completed_s1.stage1_status = 'completed'
                 ) AS stage1_completed
             FROM allocation_result
-            WHERE is_completed = 0
+            WHERE is_completed = 0 AND COALESCE(is_dismissed, 0) = 0
             ORDER BY id ASC
             """
         )
@@ -1017,6 +1174,46 @@ def allocation_results():
             cursor.close()
         if connection:
             connection.close()
+
+
+@app.delete("/allocation-results/{allocation_id}")
+def dismiss_allocation(allocation_id: int):
+    """Remove one active allocation from the dashboard permanently.
+
+    Soft-dismisses the allocation_result row so it cannot return after refresh
+    or a later /allocate. Does not delete testdata3 or allocation_history.
+    """
+    connection = get_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        ensure_allocation_table(cursor)
+        cursor.execute(
+            """SELECT id, selected_stage1_machine, selected_stage2_machine, PART_NO
+               FROM allocation_result WHERE id=%s""",
+            (allocation_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Allocation row not found.")
+        cursor.execute(
+            "UPDATE allocation_result SET is_dismissed=1, status='DISMISSED' WHERE id=%s",
+            (allocation_id,),
+        )
+        affected = [row.get("selected_stage1_machine"), row.get("selected_stage2_machine")]
+        recalculate_machine_queues(cursor, True, [m for m in affected if m])
+        if row.get("selected_stage2_machine"):
+            recalculate_stage2_dependencies(cursor, [row.get("PART_NO")])
+        connection.commit()
+        return {"success": True, "id": allocation_id, "dismissed": True}
+    except HTTPException:
+        connection.rollback()
+        raise
+    except Exception as exc:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=f"Unable to remove allocation: {exc}")
+    finally:
+        cursor.close()
+        connection.close()
 
 
 @app.get("/allocation-machines")
@@ -1055,15 +1252,6 @@ def planning_records():
             STAGE2_setup_time, STAGE2_unit_time, STAGE2_smh, completed, smh
             FROM testdata3
             WHERE SR IS NOT NULL AND SR > 0 AND PART_NO IS NOT NULL AND TRIM(PART_NO) <> ''
-              AND NOT EXISTS (
-                SELECT 1 FROM allocation_history h WHERE h.part_no = testdata3.PART_NO
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM allocation_result ar
-                WHERE ar.SR=testdata3.SR
-                  AND (COALESCE(ar.stage1_status,'idle')='completed'
-                       OR COALESCE(ar.stage2_status,'idle')='completed')
-              )
             ORDER BY SR""")
         return {"success": True, "data": cursor.fetchall()}
     finally:
@@ -1208,7 +1396,7 @@ def move_board_operation(allocation_id: int, payload: BoardMove):
         # Put the moved operation at its requested destination index, then let
         # the single queue engine cascade both affected machines.
         cursor.execute("""SELECT id FROM allocation_result
-            WHERE id<>%s AND (
+            WHERE id<>%s AND COALESCE(is_dismissed,0)=0 AND (
                 (selected_stage1_machine=%s AND COALESCE(stage1_status,'idle') <> 'completed') OR
                 (selected_stage2_machine=%s AND COALESCE(stage2_status,'idle') <> 'completed')
             )
@@ -1249,10 +1437,7 @@ def create_manual_allocation(payload: ManualAllocation):
             FROM testdata3 WHERE SR=%s LIMIT 1""", (selected_sr,))
         values = cursor.fetchone()
         if not values:
-            raise HTTPException(status_code=409, detail="The part work is already done.")
-        cursor.execute("SELECT 1 FROM allocation_history WHERE part_no=%s LIMIT 1", (values["PART_NO"],))
-        if cursor.fetchone():
-            raise HTTPException(status_code=409, detail="The part work is already done.")
+            raise HTTPException(status_code=404, detail="Planning record not found for the selected SR.")
         quantity = payload.values.get("quantity")
         if quantity not in (None, ""):
             try:
@@ -1261,68 +1446,88 @@ def create_manual_allocation(payload: ManualAllocation):
                 raise HTTPException(status_code=422, detail="Quantity must be an integer.")
             if quantity < 1:
                 raise HTTPException(status_code=422, detail="Quantity must be at least 1.")
-            # Quantity is the one intentional user override in this form.
-            # Recalculate only the allocation values; the source part and its
-            # database-owned machine selection stay unchanged.
             values["BATCH_QTY"] = quantity
             values["STAGE1_smh"] = to_float(values.get("STAGE1_setup_time")) + to_float(values.get("STAGE1_unit_time")) * quantity
             values["STAGE2_smh"] = to_float(values.get("STAGE2_setup_time")) + to_float(values.get("STAGE2_unit_time")) * quantity
-        duration = to_float(values.get("STAGE1_smh") if stage_one else values.get("STAGE2_smh"))
-        if duration <= 0:
-            raise HTTPException(status_code=422, detail="The selected stage SMH must be greater than zero.")
-        machine_column = "selected_stage1_machine" if stage_one else "selected_stage2_machine"
-        end_column = "stage1_end" if stage_one else "stage2_end"
-        prefix = "stage1" if stage_one else "stage2"
-        cursor.execute(f"""SELECT id, {machine_column} old_machine FROM allocation_result
-            WHERE SR=%s AND {machine_column} IS NOT NULL
-              AND COALESCE({prefix}_status,'idle') <> 'completed'
-            ORDER BY id LIMIT 1""", (values["SR"],))
+        configured = source_machines(cursor)
+        cursor.execute("""SELECT * FROM allocation_result
+            WHERE SR=%s AND is_completed=0 AND COALESCE(is_dismissed,0)=0
+            ORDER BY id DESC LIMIT 1""", (values["SR"],))
         existing = cursor.fetchone()
-        # Existing-part allocation is database-driven: keep its current
-        # machine when allocated, otherwise use its planned stage machine.
-        selected_machine = clean_machine(existing["old_machine"] if existing else (
-            values.get("machine_STAGE1") if stage_one else values.get("machine_STAGE2")
-        ))
-        if selected_machine not in source_machines(cursor):
-            raise HTTPException(status_code=422, detail="The selected part has no valid machine for this stage.")
         excluded_id = existing["id"] if existing else 0
-        # A physical machine can host either stage, so append after the last
-        # operation on that machine—not just the same stage's last operation.
-        cursor.execute("""SELECT MAX(end_time) latest FROM (
-            SELECT stage1_end AS end_time FROM allocation_result
-            WHERE selected_stage1_machine=%s AND id<>%s
-              AND COALESCE(stage1_status, 'idle') <> 'completed'
-            UNION ALL
-            SELECT stage2_end AS end_time FROM allocation_result
-            WHERE selected_stage2_machine=%s AND id<>%s
-              AND COALESCE(stage2_status, 'idle') <> 'completed'
-        ) machine_operations""", (selected_machine, excluded_id, selected_machine, excluded_id))
-        latest = cursor.fetchone()["latest"]
-        scheduled_start = max(latest or build_start_datetime(), build_start_datetime())
-        scheduled_end = scheduled_start + timedelta(hours=duration)
-        cursor.execute("""SELECT COALESCE(MAX(queue_position), 0) last_position FROM allocation_result
-            WHERE (selected_stage1_machine=%s AND COALESCE(stage1_status, 'idle') <> 'completed')
-               OR (selected_stage2_machine=%s AND COALESCE(stage2_status, 'idle') <> 'completed')""",
-            (selected_machine, selected_machine))
-        queue_position = int(cursor.fetchone()["last_position"] or 0) + 1
-        s1_machine, s2_machine = (selected_machine, None) if stage_one else (None, selected_machine)
-        s1_start, s1_end = (scheduled_start, scheduled_end) if stage_one else (None, None)
-        s2_start, s2_end = (None, None) if stage_one else (scheduled_start, scheduled_end)
+
+        requested_s1 = clean_machine(payload.selected_machine)
+        requested_s2 = clean_machine(payload.selected_stage2_machine)
+
+        if requested_s1 and requested_s1 not in configured:
+            raise HTTPException(status_code=422, detail="Selected Stage 1 machine is not present in testdata3.")
+        if requested_s2 and requested_s2 not in configured:
+            raise HTTPException(status_code=422, detail="Selected Stage 2 machine is not present in testdata3.")
+
+        # Stage 1 empty → keep automatic/default machine selection.
+        stage1_machine = requested_s1 or clean_machine(
+            (existing or {}).get("selected_stage1_machine")
+            or values.get("machine_STAGE1")
+            or values.get("machine_STAGE1_A")
+        )
+        if not stage1_machine:
+            stage1_machine = choose_next_machine(cursor, values.get("machine_STAGE1"), values.get("machine_STAGE1_A"))
+        # Empty Stage 2 is valid (Stage-1-only). Do not auto-fill Stage 2.
+        stage2_machine = requested_s2
+        if not stage_one and not stage2_machine:
+            stage2_machine = clean_machine(payload.selected_machine) or choose_next_machine(
+                cursor, values.get("machine_STAGE2"), values.get("machine_STAGE2_A")
+            )
+
+        stage1_duration = to_float(values.get("STAGE1_smh"))
+        stage2_duration = to_float(values.get("STAGE2_smh"))
+        if stage1_machine and stage1_duration <= 0 and stage_one:
+            raise HTTPException(status_code=422, detail="The selected stage SMH must be greater than zero.")
+        if stage2_machine and stage2_duration <= 0:
+            stage2_machine = None
+
+        if not stage1_machine and not stage2_machine:
+            raise HTTPException(status_code=422, detail="Select at least a Stage 1 machine, or a valid default machine.")
+        if stage1_machine and stage1_machine not in configured:
+            raise HTTPException(status_code=422, detail="The selected part has no valid machine for this stage.")
+
+        s1_start = s1_end = s2_start = s2_end = None
+        s1_pos = s2_pos = None
+        affected = []
+        if stage1_machine:
+            s1_start, s1_end = schedule_after_machine(cursor, stage1_machine, stage1_duration, None, excluded_id)
+            s1_pos = machine_next_position(cursor, stage1_machine)
+            affected.append(stage1_machine)
+        if stage2_machine:
+            s2_start, s2_end = schedule_after_machine(
+                cursor, stage2_machine, stage2_duration, s1_end, excluded_id
+            )
+            s2_pos = machine_next_position(cursor, stage2_machine)
+            affected.append(stage2_machine)
+
+        queue_position = max(s1_pos or 0, s2_pos or 0) or None
         if existing:
-            # Manual allocation is an override: move the existing automatic
-            # stage instead of creating a duplicate card or returning 409.
-            cursor.execute(f"""UPDATE allocation_result SET {machine_column}=%s,
-                {prefix}_start=%s, {prefix}_end=%s, BATCH_QTY=%s,
-                STAGE1_SMH=%s, STAGE2_SMH=%s, queue_position=%s,
-                {prefix}_queue_position=%s, is_manual=1
-                WHERE id=%s""", (selected_machine, scheduled_start, scheduled_end,
-                                  values["BATCH_QTY"], values["STAGE1_smh"], values["STAGE2_smh"],
-                                  queue_position, queue_position, existing["id"]))
-            recalculate_machine_queues(cursor, stage_one, [existing["old_machine"], selected_machine])
-            if stage_one:
-                recalculate_stage2_dependencies(cursor, [values.get("PART_NO")])
+            old_machines = [existing.get("selected_stage1_machine"), existing.get("selected_stage2_machine")]
+            cursor.execute(
+                """UPDATE allocation_result SET
+                    selected_stage1_machine=%s, selected_stage2_machine=%s,
+                    stage1_start=%s, stage1_end=%s, stage2_start=%s, stage2_end=%s,
+                    BATCH_QTY=%s, STAGE1_SMH=%s, STAGE2_SMH=%s,
+                    queue_position=%s, stage1_queue_position=%s, stage2_queue_position=%s,
+                    planned_start=%s, planned_end=%s, is_manual=1
+                WHERE id=%s""",
+                (
+                    stage1_machine, stage2_machine, s1_start, s1_end, s2_start, s2_end,
+                    values["BATCH_QTY"], values["STAGE1_smh"], values["STAGE2_smh"],
+                    queue_position, s1_pos, s2_pos,
+                    s1_start or s2_start, s2_end or s1_end, existing["id"],
+                ),
+            )
+            recalculate_machine_queues(cursor, True, [m for m in old_machines + affected if m])
+            recalculate_stage2_dependencies(cursor, [values.get("PART_NO")])
             connection.commit()
             return {"success": True, "id": existing["id"], "overridden": True}
+
         cursor.execute(
             """INSERT INTO allocation_result (
                 SR, PART_NO, PROJECT, MODULE, PRIORITY,
@@ -1332,8 +1537,9 @@ def create_manual_allocation(payload: ManualAllocation):
                 selected_stage1_machine, selected_stage2_machine,
                 stage1_start, stage1_end, stage2_start, stage2_end,
                 stage1_status, stage2_status, status, is_manual,
-                queue_position, stage1_queue_position, stage2_queue_position
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'idle','idle','ALLOCATED',1,%s,%s,%s)""",
+                queue_position, stage1_queue_position, stage2_queue_position,
+                planned_start, planned_end, is_carried_forward
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'idle','idle','ALLOCATED',1,%s,%s,%s,%s,%s,0)""",
             (to_int(values.get("SR"), 0), values.get("PART_NO"), values.get("PROJECT"), values.get("MODULE"), to_int(values.get("PRIORITY")),
              clean_machine(values.get("machine_STAGE1")), clean_machine(values.get("machine_STAGE1_A")),
              clean_machine(values.get("machine_STAGE2")), clean_machine(values.get("machine_STAGE2_A")),
@@ -1341,15 +1547,20 @@ def create_manual_allocation(payload: ManualAllocation):
              to_float(values.get("completed")), to_float(values.get("smh")), to_float(values.get("BATCH_QTY")),
              to_float(values.get("STAGE1_setup_time")), to_float(values.get("STAGE1_unit_time")),
              to_float(values.get("STAGE2_setup_time")), to_float(values.get("STAGE2_unit_time")),
-             s1_machine, s2_machine, s1_start, s1_end, s2_start, s2_end,
-             queue_position, queue_position if stage_one else None, queue_position if not stage_one else None),
+             stage1_machine, stage2_machine, s1_start, s1_end, s2_start, s2_end,
+             queue_position, s1_pos, s2_pos, s1_start or s2_start, s2_end or s1_end),
         )
         allocation_id = cursor.lastrowid
-        recalculate_machine_queues(cursor, stage_one, [selected_machine])
-        if stage_one:
+        recalculate_machine_queues(cursor, True, affected)
+        if stage2_machine:
             recalculate_stage2_dependencies(cursor, [values.get("PART_NO")])
         connection.commit()
-        return {"success": True, "id": allocation_id, "scheduled_start": scheduled_start, "scheduled_end": scheduled_end}
+        return {
+            "success": True,
+            "id": allocation_id,
+            "scheduled_start": s1_start or s2_start,
+            "scheduled_end": s2_end or s1_end,
+        }
     except Exception:
         connection.rollback()
         raise
@@ -1364,8 +1575,6 @@ def create_new_manual_allocation(payload: NewManualAllocation):
     if not payload.part_no.strip():
         raise HTTPException(status_code=422, detail="PART_NO is required.")
     has_stage2 = bool(clean_machine(payload.selected_stage2_machine))
-    if has_stage2 and payload.completed_stage != "Stage 2":
-        raise HTTPException(status_code=422, detail="Select Stage 2 when a Stage 2 machine is assigned.")
     connection = get_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -1373,18 +1582,11 @@ def create_new_manual_allocation(payload: NewManualAllocation):
             raise HTTPException(status_code=422, detail="Selected Stage 1 machine is not present in testdata3.")
         if has_stage2 and payload.selected_stage2_machine not in source_machines(cursor):
             raise HTTPException(status_code=422, detail="Selected Stage 2 machine is not present in testdata3.")
-        cursor.execute("""
-            SELECT EXISTS(
-                SELECT 1 FROM testdata3 WHERE PART_NO=%s
-                UNION ALL
-                SELECT 1 FROM allocation_history WHERE part_no=%s
-            ) duplicate
-        """, (payload.part_no.strip(), payload.part_no.strip()))
+        cursor.execute("SELECT EXISTS(SELECT 1 FROM testdata3 WHERE PART_NO=%s) duplicate", (payload.part_no.strip(),))
         if next(iter(cursor.fetchone().values())):
-            raise HTTPException(status_code=409, detail="The part work is already done.")
+            raise HTTPException(status_code=409, detail="PART_NO already exists in planning data. Use Add Existing Part.")
         cursor.execute("SELECT COALESCE(MAX(SR),0)+1 next_sr FROM testdata3")
         sr = int(cursor.fetchone()["next_sr"])
-        # Existing planning data follows setup + (unit × batch) for each stage.
         stage1_smh = payload.stage1_setup_time + payload.stage1_unit_time * payload.batch_qty
         stage2_smh = (payload.stage2_setup_time + payload.stage2_unit_time * payload.batch_qty) if has_stage2 else 0
         cursor.execute("""INSERT INTO testdata3 (SR, PART_NO, PROJECT, MODULE, PRIORITY,
@@ -1403,15 +1605,15 @@ def create_new_manual_allocation(payload: NewManualAllocation):
     finally:
         cursor.close()
         connection.close()
-    stage1_result = create_manual_allocation(
-        ManualAllocation(values={"SR": sr}, stage="Stage 1", selected_machine=payload.selected_machine)
-    )
-    stage2_result = None
-    if has_stage2:
-        stage2_result = create_manual_allocation(
-            ManualAllocation(values={"SR": sr}, stage="Stage 2", selected_machine=payload.selected_stage2_machine)
+    result = create_manual_allocation(
+        ManualAllocation(
+            values={"SR": sr, "quantity": payload.batch_qty},
+            stage="Stage 1",
+            selected_machine=payload.selected_machine,
+            selected_stage2_machine=payload.selected_stage2_machine if has_stage2 else None,
         )
-    return {"success": True, "sr": sr, "stage1": stage1_result, "stage2": stage2_result,
+    )
+    return {"success": True, "sr": sr, "stage1": result, "stage2": result if has_stage2 else None,
             "stage1_smh": stage1_smh, "stage2_smh": stage2_smh}
 
 

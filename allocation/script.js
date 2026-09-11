@@ -65,6 +65,7 @@ function mapApiAllocation(row, stage) {
   const end = dbDateTimeParts(endValue);
   const operationStatus = stage === 'Stage 1' ? row.stage1_status : row.stage2_status;
   if (!machine || !start || !end || operationStatus === 'completed') return null;
+  const smhHours = Number(stage === 'Stage 1' ? (row.STAGE1_SMH ?? row.stage1_smh) : (row.STAGE2_SMH ?? row.stage2_smh)) || 0;
 
   return {
     id: `db-${row.id}-${stage === 'Stage 1' ? 's1' : 's2'}`,
@@ -99,8 +100,12 @@ function mapApiAllocation(row, stage) {
     dbId: row.id,
     workOrder: row.work_order || '',
     manualAssignment: Boolean(row.is_manual),
-    durationMinutes: Math.max(1, Math.round((new Date(endValue) - new Date(startValue)) / 60000)),
-    stage1Completed: Boolean(row.stage1_completed) || row.stage1_status === 'completed'
+    durationMinutes: smhHours > 0
+      ? Math.max(1, Math.round(smhHours * 60))
+      : Math.max(1, Math.round((new Date(endValue) - new Date(startValue)) / 60000)),
+    stage1Completed: Boolean(row.stage1_completed) || row.stage1_status === 'completed',
+    isCarriedForward: Boolean(Number(row.is_carried_forward)),
+    smhHours
   };
 }
 
@@ -289,9 +294,39 @@ function durationMinutes(job) {
 }
 
 function estimatedDurationLabel(job) {
-  const hours = durationMinutes(job) / 60;
+  const hours = (Number(job.smhHours) > 0 ? Number(job.smhHours) : durationMinutes(job) / 60);
   const value = hours.toLocaleString(undefined, {maximumFractionDigits:2});
   return `${value} ${hours === 1 ? 'hour' : 'hours'}`;
+}
+
+function formatEstimatedStamp(dateValue, timeValue) {
+  return `${formatDisplayDate(dateValue)}, ${formatTime12(timeValue)}`;
+}
+
+function workingScheduleSegments(job) {
+  const start = new Date(`${job.startDate}T${job.startTime}:00`);
+  const end = new Date(`${job.endDate}T${job.endTime}:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return [];
+  if (job.startDate === job.endDate) return [];
+  const segments = [];
+  let cursor = new Date(start);
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  while (cursor < end && segments.length < 6) {
+    const dayStart = new Date(cursor);
+    dayStart.setHours(7, 0, 0, 0);
+    const dayEnd = new Date(cursor);
+    dayEnd.setHours(23, 0, 0, 0);
+    if (cursor < dayStart) cursor = dayStart;
+    if (cursor >= dayEnd) {
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1, 7, 0, 0);
+      continue;
+    }
+    const sliceEnd = end < dayEnd ? end : dayEnd;
+    segments.push(`${formatDisplayDate(`${cursor.getFullYear()}-${pad(cursor.getMonth()+1)}-${pad(cursor.getDate())}`)}: ${formatTime12(stamp(cursor))} - ${formatTime12(stamp(sliceEnd))}`);
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1, 7, 0, 0);
+  }
+  return segments;
 }
 
 function setScheduledRange(job, start) {
@@ -331,7 +366,7 @@ async function persistOperations(jobs) {
 }
 
 const FIXED_CARD_WIDTH = 214;
-const LANE_HEIGHT = 224;
+const LANE_HEIGHT = 248;
 const LANE_PADDING = 6;
 const CARD_GAP = 12;
 const ROW_PADDING_X = 12;
@@ -508,6 +543,24 @@ async function stopAllocation(id) {
   renderAll();
 }
 
+async function dismissAllocation(allocation) {
+  if (!allocation?.dbId) {
+    showToast('⚠ REMOVE FAILED', 'This part has no allocation id.');
+    return;
+  }
+  if (!window.confirm('Remove this part from the current allocation?')) return;
+  try {
+    const response = await fetch(`${API_BASE_URL}/allocation-results/${allocation.dbId}`, {method:'DELETE'});
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
+    await loadFromStorage();
+    renderAll();
+    showToast('✓ PART REMOVED', `${allocation.partNo} was removed from the current allocation.`);
+  } catch (error) {
+    showToast('⚠ REMOVE FAILED', error.message);
+  }
+}
+
 /* ── Maintenance ── */
 
 async function setMaintenance(id) {
@@ -653,8 +706,11 @@ function createAllocationElement(allocation) {
   const dependencyBlocked = allocation.stage === 'Stage 2' && !stageDependencySatisfied(allocation);
 
   const box = document.createElement('div');
-  box.className = `allocation-box ${stageClass} queue-${queueState}` + (inMaintenance ? ' maintenance-part' : ' active-machine-part');
+  box.className = `allocation-box ${stageClass} queue-${queueState}`
+    + (inMaintenance ? ' maintenance-part' : ' active-machine-part')
+    + (allocation.isCarriedForward ? ' carried-forward-part' : '');
   box.dataset.id = allocation.id;
+  box.dataset.dbId = allocation.dbId || '';
   box.title = inMaintenance
     ? 'Machine under maintenance — drag this part to a valid machine'
     : allocation.stage === 'Stage 2' && !stageDependencySatisfied(allocation)
@@ -667,13 +723,16 @@ function createAllocationElement(allocation) {
 
   const displayActual = value => value ? formatDateTimeDisplay(value) : 'Not Started';
   const text = value => String(value ?? '—').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[char]);
+  const estimatedSegments = workingScheduleSegments(allocation);
+  const estimatedTitle = `Start: ${formatEstimatedStamp(allocation.startDate, allocation.startTime)} · End: ${formatEstimatedStamp(allocation.endDate, allocation.endTime)}`;
   box.innerHTML = `
+    <button type="button" class="btn-dismiss-part" data-action="dismiss" title="Remove Part" aria-label="Remove Part" onmousedown="event.stopPropagation()">&times;</button>
     <div class="alloc-card-heading"><div class="alloc-part-no" title="${text(allocation.partNo)}">${text(allocation.partNo)}</div><div class="alloc-stage">${text(allocation.stage)}</div></div>
     <div class="alloc-summary">
       <span title="Project: ${text(allocation.project)}">Project: ${text(allocation.project)}</span><span title="Module: ${text(allocation.module)}">Module: ${text(allocation.module)}</span><span>Qty: ${text(allocation.quantity)}</span>
     </div>
     <div class="alloc-time-group"><strong>Scheduled Date</strong><span class="scheduled-value">${formatDisplayDate(allocation.startDate)}<br>${formatTime12(allocation.startTime)} – ${formatTime12(allocation.endTime)}</span></div>
-    <div class="alloc-time-group estimated"><strong>Estimated</strong><span title="Estimated End: ${formatDisplayDate(allocation.endDate)}, ${formatTime12(allocation.endTime)}">${estimatedDurationLabel(allocation)} · ${formatDisplayDate(allocation.endDate)}, ${formatTime12(allocation.endTime)}</span></div>
+    <div class="alloc-time-group estimated"><strong>Estimated</strong><span class="estimated-value" title="${estimatedTitle}">Start: ${formatEstimatedStamp(allocation.startDate, allocation.startTime)}<br>End: ${formatEstimatedStamp(allocation.endDate, allocation.endTime)}${estimatedSegments.length ? `<br>${estimatedSegments.join('<br>')}` : ''}</span></div>
     <div class="alloc-time-group actual"><strong>Actual</strong><span>${allocation.actualStart ? displayActual(allocation.actualStart) : 'Not Started'} / ${allocation.actualEnd ? formatDateTimeDisplay(allocation.actualEnd) : '—'}</span></div>
     ${allocation.manualAssignment ? '<div class="alloc-assignment-badge">MANUAL</div>' : ''}
     ${badge}
@@ -693,6 +752,10 @@ function createAllocationElement(allocation) {
   });
   box.querySelector('[data-action="stop"]').addEventListener('click', ev => {
     ev.stopPropagation(); stopAllocation(allocation.id);
+  });
+  box.querySelector('[data-action="dismiss"]')?.addEventListener('click', ev => {
+    ev.stopPropagation();
+    dismissAllocation(allocation);
   });
   const woInput = box.querySelector('.wo-input');
   const woState = box.querySelector('.wo-state');
@@ -932,9 +995,9 @@ function renderNewManualForm() {
     ${integer('stage1_setup_time')}${integer('stage1_unit_time')}
     <label class="manual-field">STAGE1_smh<input value="Calculated by backend" readonly></label>
     <label class="manual-field">stage2_setup_time<input name="stage2_setup_time" type="number" min="0" step="1"></label><label class="manual-field">stage2_unit_time<input name="stage2_unit_time" type="number" min="0" step="1"></label>
-    <label class="manual-field">Complete Stage (Stage 2)<select name="completed_stage"><option value="">Select Stage 2</option><option value="Stage 2">Stage 2</option></select></label>
-    <label class="manual-field">Stage 1 Machine<select name="selected_machine" required><option value="">Select Machine</option>${machines.map(machine => `<option>${text(machine.id)}</option>`).join('')}</select></label>
-    <label class="manual-field">Stage 2 Machine<select name="selected_stage2_machine"><option value="">Select Machine</option>${machines.map(machine => `<option>${text(machine.id)}</option>`).join('')}</select></label>`;
+    <label class="manual-field">Complete Stage (Stage 2)<select name="completed_stage"><option value="">None (Stage 1 only)</option><option value="Stage 2">Stage 2</option></select></label>
+    <label class="manual-field">Stage 1 Machine<select name="selected_machine" required><option value="">Select Stage 1 Machine</option>${machines.map(machine => `<option>${text(machine.id)}</option>`).join('')}</select></label>
+    <label class="manual-field">Stage 2 Machine<select name="selected_stage2_machine"><option value="">Select Stage 2 Machine</option>${machines.map(machine => `<option>${text(machine.id)}</option>`).join('')}</select></label>`;
   fields.querySelector('[name="manual_mode"]').addEventListener('change', () => openManualAllocation());
 }
 
@@ -959,7 +1022,8 @@ async function openManualAllocation() {
     <label class="manual-field">Part Number<input name="part_no_search" list="${datalistId}" placeholder="Type to search part numbers…" autocomplete="off" required></label>
     <input type="hidden" name="SR">
     <label class="manual-field">Quantity<input name="quantity" type="number" min="1" step="1" required></label>
-    <label class="manual-field">Machine<select name="selected_machine"><option value="">Select Machine</option>${machines.map(machine => `<option>${text(machine.id)}</option>`).join('')}</select></label>`;
+    <label class="manual-field">Stage 1 Machine<select name="selected_machine"><option value="">Select Stage 1 Machine</option>${machines.map(machine => `<option>${text(machine.id)}</option>`).join('')}</select></label>
+    <label class="manual-field">Stage 2 Machine<select name="selected_stage2_machine"><option value="">Select Stage 2 Machine</option>${machines.map(machine => `<option>${text(machine.id)}</option>`).join('')}</select></label>`;
 
     fields.querySelector('[name="manual_mode"]').addEventListener('change', event => { if (event.target.value === 'new') renderNewManualForm(); });
 
@@ -969,6 +1033,7 @@ async function openManualAllocation() {
     const srInput   = fields.querySelector('[name="SR"]');
     const qtyInput  = fields.querySelector('[name="quantity"]');
     const machSel   = fields.querySelector('[name="selected_machine"]');
+    const mach2Sel  = fields.querySelector('[name="selected_stage2_machine"]');
 
     function resolvePartNo(partNo) {
       const record = manualPlanningRecords.find(r => r.PART_NO === partNo);
@@ -976,6 +1041,7 @@ async function openManualAllocation() {
       srInput.value    = record.SR;
       qtyInput.value   = record.BATCH_QTY ?? '';
       machSel.value    = record.machine_STAGE1 ?? '';
+      if (mach2Sel) mach2Sel.value = record.machine_STAGE2 ?? '';
     }
 
     partInput.addEventListener('input', () => resolvePartNo(partInput.value.trim()));
@@ -1009,15 +1075,8 @@ function closeManualAllocation() { document.getElementById('manualModal').hidden
 async function submitManualAllocation(event) {
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-  const alreadyDoneTitle = '✓ PART WORK IS ALREADY DONE';
-  const alreadyDoneMessage = 'The part work is already done.';
 
   if (values.manual_mode === 'new') {
-    const hasStage2 = values.completed_stage === 'Stage 2' || Boolean(values.selected_stage2_machine);
-    if (hasStage2 && (!values.completed_stage || !values.selected_stage2_machine)) {
-      showToast('⚠ STAGE 2 DETAILS', 'Select both Complete Stage and Stage 2 Machine, or leave both blank for a Stage 1-only part.');
-      return;
-    }
     try {
       const response = await fetch(`${API_BASE_URL}/allocation-results/manual/new`, {
         method:'POST',
@@ -1026,6 +1085,7 @@ async function submitManualAllocation(event) {
           ...values,
           priority:0,
           stage:values.completed_stage || 'Stage 1',
+          selected_stage2_machine: values.selected_stage2_machine || null,
           stage2_setup_time:Number(values.stage2_setup_time || 0),
           stage2_unit_time:Number(values.stage2_unit_time || 0)
         })
@@ -1037,26 +1097,23 @@ async function submitManualAllocation(event) {
       await loadFromStorage(); closeManualAllocation(); renderAll();
       showToast('✓ NEW PART ALLOCATED', 'SR and SMH were calculated by the backend.');
     } catch (error) {
-      const isAlreadyAdded = error.message.toLowerCase().includes('already') ||
-                             error.message.toLowerCase().includes('exist') ||
-                             error.message.toLowerCase().includes('duplicate') ||
-                             error.message.toLowerCase().includes('done');
-      if (isAlreadyAdded) {
-        showToast(alreadyDoneTitle, alreadyDoneMessage);
-      } else {
-        showToast('⚠ NEW PART FAILED', error.message);
-      }
+      showToast('⚠ NEW PART FAILED', error.message);
     }
     return;
   }
 
   if (!values.SR) {
-    showToast(alreadyDoneTitle, alreadyDoneMessage);
+    showToast('⚠ MANUAL ALLOCATION', 'Select an existing part number from planning data.');
     return;
   }
 
-  const {selected_machine, part_no_search, ...sourceValues} = values;
-  const payload = {values:sourceValues, stage:'Stage 1', selected_machine};
+  const {selected_machine, selected_stage2_machine, part_no_search, ...sourceValues} = values;
+  const payload = {
+    values: sourceValues,
+    stage: 'Stage 1',
+    selected_machine: selected_machine || null,
+    selected_stage2_machine: selected_stage2_machine || null
+  };
   try {
     const response = await fetch(`${API_BASE_URL}/allocation-results/manual`, {
       method:'POST',
@@ -1069,15 +1126,7 @@ async function submitManualAllocation(event) {
     }
     await response.json();
   } catch (error) {
-    const isAlreadyAdded = error.message.toLowerCase().includes('already') ||
-                           error.message.toLowerCase().includes('exist') ||
-                           error.message.toLowerCase().includes('duplicate') ||
-                           error.message.toLowerCase().includes('done');
-    if (isAlreadyAdded) {
-      showToast(alreadyDoneTitle, alreadyDoneMessage);
-    } else {
-      showToast('⚠ MANUAL ALLOCATION FAILED', error.message);
-    }
+    showToast('⚠ MANUAL ALLOCATION FAILED', error.message);
     return;
   }
   await loadFromStorage(); closeManualAllocation(); event.currentTarget.reset(); renderAll();

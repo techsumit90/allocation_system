@@ -34,7 +34,7 @@
   --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.08);
   --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.1);
   --machine-col-width: 160px;
-  --row-height: 224px;
+  --row-height: 248px;
   --hour-width: 224px;
   --timeline-start-hour: 8;
   --timeline-end-hour: 18;
@@ -481,6 +481,7 @@ body {
   border-radius: 6px;
   border: 1px solid;
   padding: 6px 8px;
+  padding-top: 18px;
   cursor: grab;
   z-index: 10;
   display: flex;
@@ -553,6 +554,43 @@ body {
 }
 .allocation-box.active-machine-part .alloc-part-no {
   color: var(--running);
+}
+
+.allocation-box.active-machine-part.carried-forward-part,
+.allocation-box.carried-forward-part {
+  background: #E6D7FF;
+  border-color: #c4b5fd;
+  border-left: 4px solid #8b5cf6;
+}
+.allocation-box.active-machine-part.carried-forward-part .alloc-part-no,
+.allocation-box.carried-forward-part .alloc-part-no {
+  color: #5b21b6;
+}
+
+.btn-dismiss-part {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 16px;
+  cursor: pointer;
+  z-index: 3;
+}
+.btn-dismiss-part:hover {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.alloc-time-group.estimated .estimated-value {
+  white-space: normal;
+  line-height: 1.25;
 }
 
 .allocation-box.queue-running {

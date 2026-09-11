@@ -27,6 +27,9 @@
   --stage2-header: #166534;
   --running: #059669;
   --running-bg: #ecfdf5;
+  --carried-forward: #d97706;
+  --carried-forward-bg: #fef3c7;
+  --carried-forward-border: #f59e0b;
   --completed: #6b7280;
   --completed-bg: #f3f4f6;
   --maintenance: #dc2626;
@@ -546,25 +549,31 @@ body {
   color: #7f1d1d;
 }
 
-/* After a valid drop onto a working machine, the part is green again. */
-.allocation-box.active-machine-part {
+/* Current-session parts (new sort + current-session manual): green. */
+.allocation-box.active-machine-part,
+.allocation-box.new-allocation-part {
   background: var(--running-bg);
   border-color: #86efac;
   border-left: 4px solid var(--running);
 }
-.allocation-box.active-machine-part .alloc-part-no {
+.allocation-box.active-machine-part .alloc-part-no,
+.allocation-box.new-allocation-part .alloc-part-no {
   color: var(--running);
 }
 
+/* Carried-over active/queued parts from a prior allocation session: yellow. */
 .allocation-box.active-machine-part.carried-forward-part,
 .allocation-box.carried-forward-part {
-  background: #E6D7FF;
-  border-color: #c4b5fd;
-  border-left: 4px solid #8b5cf6;
+  background: var(--carried-forward-bg);
+  border-color: var(--carried-forward-border);
+  border-left: 4px solid var(--carried-forward);
 }
 .allocation-box.active-machine-part.carried-forward-part .alloc-part-no,
 .allocation-box.carried-forward-part .alloc-part-no {
-  color: #5b21b6;
+  color: var(--carried-forward);
+}
+.allocation-box.carried-forward-part.queue-running {
+  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.22), var(--shadow-md);
 }
 
 .btn-dismiss-part {

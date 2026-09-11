@@ -916,6 +916,9 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
             if row["PART_NO"] in completed:
                 skipped_completed.append(row["PART_NO"])
                 continue
+            # Dedup: keep the existing active/running/queued row as-is
+            # (machine, queue, progress). It is already marked carried-forward
+            # so the dashboard renders it yellow. Only unseen PART_NOs insert.
             if row["PART_NO"] in already_active:
                 skipped_duplicate.append(row["PART_NO"])
                 continue

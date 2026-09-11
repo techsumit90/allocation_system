@@ -708,7 +708,7 @@ function createAllocationElement(allocation) {
   const box = document.createElement('div');
   box.className = `allocation-box ${stageClass} queue-${queueState}`
     + (inMaintenance ? ' maintenance-part' : ' active-machine-part')
-    + (allocation.isCarriedForward ? ' carried-forward-part' : '');
+    + (allocation.isCarriedForward ? ' carried-forward-part' : ' new-allocation-part');
   box.dataset.id = allocation.id;
   box.dataset.dbId = allocation.dbId || '';
   box.title = inMaintenance

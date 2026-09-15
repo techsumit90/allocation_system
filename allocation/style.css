@@ -602,6 +602,43 @@ body {
   line-height: 1.25;
 }
 
+.alloc-card-mid {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+}
+
+.alloc-card-mid-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.alloc-part-image-wrap {
+  flex: 0 0 58px;
+  width: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.alloc-part-image-wrap.is-missing {
+  display: none;
+}
+
+.alloc-part-image {
+  max-width: 100%;
+  max-height: 70px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: block;
+}
+
 .allocation-box.queue-running {
   border-width: 2px;
   box-shadow: 0 0 0 2px rgba(5, 150, 105, 0.2), var(--shadow-md);

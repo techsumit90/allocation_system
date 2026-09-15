@@ -289,6 +289,12 @@ function stageDependencySatisfied(allocation) {
   return allocation.stage1Completed === true;
 }
 
+function partImageSrc(partNo) {
+  const name = String(partNo || '').trim();
+  if (!name) return '';
+  return `images/${encodeURIComponent(name)}.jpg`;
+}
+
 function durationMinutes(job) {
   return Number(job.durationMinutes) || Math.max(1, getDuration(job));
 }
@@ -725,17 +731,23 @@ function createAllocationElement(allocation) {
   const text = value => String(value ?? '—').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[char]);
   const estimatedSegments = workingScheduleSegments(allocation);
   const estimatedTitle = `Start: ${formatEstimatedStamp(allocation.startDate, allocation.startTime)} · End: ${formatEstimatedStamp(allocation.endDate, allocation.endTime)}`;
+  const imageSrc = partImageSrc(allocation.partNo);
   box.innerHTML = `
     <button type="button" class="btn-dismiss-part" data-action="dismiss" title="Remove Part" aria-label="Remove Part" onmousedown="event.stopPropagation()">&times;</button>
     <div class="alloc-card-heading"><div class="alloc-part-no" title="${text(allocation.partNo)}">${text(allocation.partNo)}</div><div class="alloc-stage">${text(allocation.stage)}</div></div>
     <div class="alloc-summary">
       <span title="Project: ${text(allocation.project)}">Project: ${text(allocation.project)}</span><span title="Module: ${text(allocation.module)}">Module: ${text(allocation.module)}</span><span>Qty: ${text(allocation.quantity)}</span>
     </div>
-    <div class="alloc-time-group"><strong>Scheduled Date</strong><span class="scheduled-value">${formatDisplayDate(allocation.startDate)}<br>${formatTime12(allocation.startTime)} – ${formatTime12(allocation.endTime)}</span></div>
-    <div class="alloc-time-group estimated"><strong>Estimated</strong><span class="estimated-value" title="${estimatedTitle}">Start: ${formatEstimatedStamp(allocation.startDate, allocation.startTime)}<br>End: ${formatEstimatedStamp(allocation.endDate, allocation.endTime)}${estimatedSegments.length ? `<br>${estimatedSegments.join('<br>')}` : ''}</span></div>
-    <div class="alloc-time-group actual"><strong>Actual</strong><span>${allocation.actualStart ? displayActual(allocation.actualStart) : 'Not Started'} / ${allocation.actualEnd ? formatDateTimeDisplay(allocation.actualEnd) : '—'}</span></div>
-    ${allocation.manualAssignment ? '<div class="alloc-assignment-badge">MANUAL</div>' : ''}
-    ${badge}
+    <div class="alloc-card-mid">
+      <div class="alloc-card-mid-text">
+        <div class="alloc-time-group"><strong>Scheduled Date</strong><span class="scheduled-value">${formatDisplayDate(allocation.startDate)}<br>${formatTime12(allocation.startTime)} – ${formatTime12(allocation.endTime)}</span></div>
+        <div class="alloc-time-group estimated"><strong>Estimated</strong><span class="estimated-value" title="${estimatedTitle}">Start: ${formatEstimatedStamp(allocation.startDate, allocation.startTime)}<br>End: ${formatEstimatedStamp(allocation.endDate, allocation.endTime)}${estimatedSegments.length ? `<br>${estimatedSegments.join('<br>')}` : ''}</span></div>
+        <div class="alloc-time-group actual"><strong>Actual</strong><span>${allocation.actualStart ? displayActual(allocation.actualStart) : 'Not Started'} / ${allocation.actualEnd ? formatDateTimeDisplay(allocation.actualEnd) : '—'}</span></div>
+        ${allocation.manualAssignment ? '<div class="alloc-assignment-badge">MANUAL</div>' : ''}
+        ${badge}
+      </div>
+      ${imageSrc ? `<div class="alloc-part-image-wrap"><img class="alloc-part-image" src="${text(imageSrc)}" alt="" draggable="false"></div>` : ''}
+    </div>
     <div class="alloc-work-order" onmousedown="event.stopPropagation()">
       <label>Work Order</label>
       <input type="text" class="wo-input" value="${text(allocation.workOrder || '')}" placeholder="Enter work order" ${allocation.dbId ? '' : 'disabled'}>
@@ -757,6 +769,11 @@ function createAllocationElement(allocation) {
     ev.stopPropagation();
     dismissAllocation(allocation);
   });
+  const partImage = box.querySelector('.alloc-part-image');
+  partImage?.addEventListener('error', () => {
+    partImage.closest('.alloc-part-image-wrap')?.classList.add('is-missing');
+  });
+  partImage?.addEventListener('mousedown', ev => ev.stopPropagation());
   const woInput = box.querySelector('.wo-input');
   const woState = box.querySelector('.wo-state');
   woInput?.addEventListener('mousedown', ev => ev.stopPropagation());

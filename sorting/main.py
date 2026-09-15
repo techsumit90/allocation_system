@@ -133,6 +133,42 @@ def ensure_users_table(cursor) -> None:
     """)
 
 
+def _table_columns(cursor, table_name: str) -> set:
+    cursor.execute(f"SHOW COLUMNS FROM {table_name}")
+    return {row[0] if not isinstance(row, dict) else row["Field"] for row in cursor.fetchall()}
+
+
+def ensure_allocation_schema(cursor) -> None:
+    """Add persistence columns used by /submit on existing MySQL databases.
+    Does not recreate or wipe allocation_result."""
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS allocation_result (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            SR INT NOT NULL,
+            PART_NO VARCHAR(150) DEFAULT NULL,
+            INDEX idx_allocation_sr (SR)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+    columns = _table_columns(cursor, "allocation_result")
+    for name, definition in {
+        "work_order": "VARCHAR(150) DEFAULT NULL",
+        "is_completed": "TINYINT(1) NOT NULL DEFAULT 0",
+        "batch_id": "INT DEFAULT NULL",
+    }.items():
+        if name not in columns:
+            cursor.execute(f"ALTER TABLE allocation_result ADD COLUMN {name} {definition}")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS allocation_history (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            allocation_id INT NOT NULL,
+            stage VARCHAR(20) NOT NULL,
+            part_no VARCHAR(150),
+            completed_at DATETIME NOT NULL,
+            UNIQUE KEY uq_completed_operation (allocation_id, stage)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+
 @app.get("/auth/check-username")
 def check_username(username: str):
     conn = get_connection()
@@ -239,6 +275,8 @@ def submit_combinations(payload: SubmitRequest):
     results: List[ResultRow] = []
 
     try:
+        ensure_allocation_schema(cursor)
+        conn.commit()
         # IMPORTANT: this is the only place where sorting/order is produced.
         # Allocation receives this response exactly as returned.
         query = """

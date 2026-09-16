@@ -464,8 +464,8 @@ def completed_part_numbers(cursor, part_nos: List[str]) -> set:
 
 
 def active_part_numbers(cursor, part_nos: List[str]) -> set:
-    """PART_NOs that already have a non-completed row in allocation_result —
-    re-sending them through /allocate must not create a duplicate allocation."""
+    """PART_NOs that already have a running operation. Waiting leftovers from a
+    previous allocation must not block a new allocate, and must not reappear."""
     part_nos = [p for p in dict.fromkeys(part_nos) if p]
     if not part_nos:
         return set()
@@ -473,7 +473,9 @@ def active_part_numbers(cursor, part_nos: List[str]) -> set:
     cursor.execute(
         f"""SELECT DISTINCT PART_NO AS part_no FROM allocation_result
             WHERE PART_NO IN ({placeholders}) AND is_completed=0
-              AND COALESCE(is_dismissed, 0)=0""",
+              AND COALESCE(is_dismissed, 0)=0
+              AND (COALESCE(stage1_status,'idle')='running'
+                   OR COALESCE(stage2_status,'idle')='running')""",
         tuple(part_nos),
     )
     return {r["part_no"] for r in cursor.fetchall()}
@@ -867,19 +869,30 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
         ensure_history_table(cursor)
         ensure_batch_table(cursor)
 
-        # IMPORTANT CHANGE FROM THE ORIGINAL BEHAVIOR:
-        # /allocate used to `DELETE FROM allocation_result` on every call and
-        # rebuild the whole table from scratch. That wiped active allocations,
-        # queue positions, work orders, and completion state on every re-sort —
-        # incompatible with a persistent dashboard / Existing Allocation / the
-        # completed-part protection requirement. It now APPENDS only the rows
-        # that are genuinely new, skipping parts that are already completed or
-        # already have an active (non-completed) allocation row.
+        # New allocation: waiting/idle leftovers stay out of the new board.
+        # Only in-progress (running) operations carry forward.
         batch_id = get_or_create_active_batch(cursor, user_id)
         session_id = uuid4().hex
         cursor.execute(
-            """UPDATE allocation_result SET is_carried_forward=1
-               WHERE is_completed=0 AND COALESCE(is_dismissed,0)=0"""
+            """UPDATE allocation_result
+                  SET allocation_session_id=NULL,
+                      is_carried_forward=0,
+                      selected_stage1_machine=NULL,
+                      selected_stage2_machine=NULL,
+                      status='WAITING'
+                WHERE is_completed=0
+                  AND COALESCE(is_dismissed,0)=0
+                  AND COALESCE(stage1_status,'idle') <> 'running'
+                  AND COALESCE(stage2_status,'idle') <> 'running'"""
+        )
+        cursor.execute(
+            """UPDATE allocation_result
+                  SET is_carried_forward=1, allocation_session_id=%s
+                WHERE is_completed=0
+                  AND COALESCE(is_dismissed,0)=0
+                  AND (COALESCE(stage1_status,'idle')='running'
+                       OR COALESCE(stage2_status,'idle')='running')""",
+            (session_id,),
         )
         seed_machine_available_from_active_rows(cursor)
 
@@ -962,48 +975,77 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
             status = "ALLOCATED" if (stage1_machine or stage2_machine) else "WAITING"
             planned_start = stage1_start or stage2_start
             planned_end = stage2_end or stage1_end
+            queue_position = max(stage1_queue_position or 0, stage2_queue_position or 0) or None
 
             cursor.execute(
-                """
-                INSERT INTO allocation_result (
-                    SR, PROJECT, PRIORITY, MODULE, PART_NO,
-                    machine_STAGE1, machine_STAGE1_A, STAGE1_SMH,
-                    machine_STAGE2, machine_STAGE2_A, STAGE2_SMH,
-                    FINAL_smh, ac_comp, completed_limit, BATCH_QTY,
-                    STAGE1_setup_time, STAGE1_unit_time, STAGE2_setup_time, STAGE2_unit_time,
-                    selected_stage1_machine, selected_stage2_machine,
-                    stage1_start, stage1_end, stage2_start, stage2_end,
-                    status, queue_position, stage1_queue_position,
-                    stage2_queue_position, planned_start, planned_end, batch_id,
-                    allocation_session_id, is_carried_forward
-                ) VALUES (
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, 0
-                )
-                """,
-                (
-                    row["SR"], row["PROJECT"], row["PRIORITY"], row["MODULE"], row["PART_NO"],
-                    row["machine_STAGE1"], row["machine_STAGE1_A"], row["STAGE1_SMH"],
-                    row["machine_STAGE2"], row["machine_STAGE2_A"], row["STAGE2_SMH"],
-                    row["FINAL_smh"], row["ac_comp"], row["completed_limit"],
-                    row["BATCH_QTY"], row["STAGE1_setup_time"], row["STAGE1_unit_time"],
-                    row["STAGE2_setup_time"], row["STAGE2_unit_time"],
-                    stage1_machine, stage2_machine,
-                    stage1_start, stage1_end, stage2_start, stage2_end,
-                    status,
-                    max(stage1_queue_position or 0, stage2_queue_position or 0) or None,
-                    stage1_queue_position, stage2_queue_position,
-                    planned_start, planned_end, batch_id, session_id,
-                ),
+                """SELECT id, stage1_status, stage2_status FROM allocation_result
+                   WHERE PART_NO=%s AND is_completed=0 AND COALESCE(is_dismissed,0)=0
+                   LIMIT 1""",
+                (row["PART_NO"],),
             )
+            existing = cursor.fetchone()
+            values = (
+                row["SR"], row["PROJECT"], row["PRIORITY"], row["MODULE"], row["PART_NO"],
+                row["machine_STAGE1"], row["machine_STAGE1_A"], row["STAGE1_SMH"],
+                row["machine_STAGE2"], row["machine_STAGE2_A"], row["STAGE2_SMH"],
+                row["FINAL_smh"], row["ac_comp"], row["completed_limit"],
+                row["BATCH_QTY"], row["STAGE1_setup_time"], row["STAGE1_unit_time"],
+                row["STAGE2_setup_time"], row["STAGE2_unit_time"],
+                stage1_machine, stage2_machine,
+                stage1_start, stage1_end, stage2_start, stage2_end,
+                status, queue_position,
+                stage1_queue_position, stage2_queue_position,
+                planned_start, planned_end, batch_id, session_id,
+            )
+            if existing:
+                stage1_status = "completed" if existing.get("stage1_status") == "completed" else "idle"
+                stage2_status = "completed" if existing.get("stage2_status") == "completed" else "idle"
+                cursor.execute(
+                    """UPDATE allocation_result SET
+                        SR=%s, PROJECT=%s, PRIORITY=%s, MODULE=%s, PART_NO=%s,
+                        machine_STAGE1=%s, machine_STAGE1_A=%s, STAGE1_SMH=%s,
+                        machine_STAGE2=%s, machine_STAGE2_A=%s, STAGE2_SMH=%s,
+                        FINAL_smh=%s, ac_comp=%s, completed_limit=%s, BATCH_QTY=%s,
+                        STAGE1_setup_time=%s, STAGE1_unit_time=%s,
+                        STAGE2_setup_time=%s, STAGE2_unit_time=%s,
+                        selected_stage1_machine=%s, selected_stage2_machine=%s,
+                        stage1_start=%s, stage1_end=%s, stage2_start=%s, stage2_end=%s,
+                        status=%s, queue_position=%s, stage1_queue_position=%s,
+                        stage2_queue_position=%s, planned_start=%s, planned_end=%s,
+                        batch_id=%s, allocation_session_id=%s, is_carried_forward=0,
+                        stage1_status=%s, stage2_status=%s
+                       WHERE id=%s""",
+                    values + (stage1_status, stage2_status, existing["id"]),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO allocation_result (
+                        SR, PROJECT, PRIORITY, MODULE, PART_NO,
+                        machine_STAGE1, machine_STAGE1_A, STAGE1_SMH,
+                        machine_STAGE2, machine_STAGE2_A, STAGE2_SMH,
+                        FINAL_smh, ac_comp, completed_limit, BATCH_QTY,
+                        STAGE1_setup_time, STAGE1_unit_time, STAGE2_setup_time, STAGE2_unit_time,
+                        selected_stage1_machine, selected_stage2_machine,
+                        stage1_start, stage1_end, stage2_start, stage2_end,
+                        status, queue_position, stage1_queue_position,
+                        stage2_queue_position, planned_start, planned_end, batch_id,
+                        allocation_session_id, is_carried_forward
+                    ) VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, 0
+                    )
+                    """,
+                    values,
+                )
             processed += 1
             # Guards against the same PART_NO appearing twice within one
             # /allocate request (e.g. duplicate CSV rows) — not just across calls.
@@ -1140,29 +1182,45 @@ def allocation_results():
         cursor.execute(
             """
             SELECT
-                id, SR, PROJECT, PRIORITY, MODULE, PART_NO,
-                machine_STAGE1, machine_STAGE1_A, STAGE1_SMH,
-                machine_STAGE2, machine_STAGE2_A, STAGE2_SMH,
-                FINAL_smh, ac_comp, completed_limit,
-                selected_stage1_machine, selected_stage2_machine,
-                stage1_start, stage1_end, stage2_start, stage2_end,
-                status, queue_position, stage1_queue_position,
-                stage2_queue_position, planned_start, planned_end, created_at,
-                stage1_status, stage2_status,
-                stage1_actual_start, stage1_actual_end,
-                stage2_actual_start, stage2_actual_end, is_manual,
-                BATCH_QTY, STAGE1_setup_time, STAGE1_unit_time,
-                STAGE2_setup_time, STAGE2_unit_time,
-                work_order, is_completed, batch_id,
-                allocation_session_id, is_carried_forward, is_dismissed,
+                allocation_result.id, allocation_result.SR, allocation_result.PROJECT,
+                allocation_result.PRIORITY, allocation_result.MODULE,
+                COALESCE(testdata3.PART_NO, allocation_result.PART_NO) AS PART_NO,
+                allocation_result.machine_STAGE1, allocation_result.machine_STAGE1_A,
+                COALESCE(testdata3.STAGE1_smh, allocation_result.STAGE1_SMH) AS STAGE1_SMH,
+                allocation_result.machine_STAGE2, allocation_result.machine_STAGE2_A,
+                COALESCE(testdata3.STAGE2_smh, allocation_result.STAGE2_SMH) AS STAGE2_SMH,
+                allocation_result.FINAL_smh, allocation_result.ac_comp, allocation_result.completed_limit,
+                allocation_result.selected_stage1_machine, allocation_result.selected_stage2_machine,
+                allocation_result.stage1_start, allocation_result.stage1_end,
+                allocation_result.stage2_start, allocation_result.stage2_end,
+                allocation_result.status, allocation_result.queue_position,
+                allocation_result.stage1_queue_position, allocation_result.stage2_queue_position,
+                allocation_result.planned_start, allocation_result.planned_end, allocation_result.created_at,
+                allocation_result.stage1_status, allocation_result.stage2_status,
+                allocation_result.stage1_actual_start, allocation_result.stage1_actual_end,
+                allocation_result.stage2_actual_start, allocation_result.stage2_actual_end,
+                allocation_result.is_manual,
+                allocation_result.BATCH_QTY, allocation_result.STAGE1_setup_time, allocation_result.STAGE1_unit_time,
+                allocation_result.STAGE2_setup_time, allocation_result.STAGE2_unit_time,
+                allocation_result.work_order, allocation_result.is_completed, allocation_result.batch_id,
+                allocation_result.allocation_session_id, allocation_result.is_carried_forward,
+                allocation_result.is_dismissed,
                 EXISTS(
                     SELECT 1 FROM allocation_result completed_s1
                     WHERE completed_s1.PART_NO = allocation_result.PART_NO
                       AND completed_s1.stage1_status = 'completed'
                 ) AS stage1_completed
             FROM allocation_result
-            WHERE is_completed = 0 AND COALESCE(is_dismissed, 0) = 0
-            ORDER BY id ASC
+            LEFT JOIN testdata3 ON testdata3.PART_NO = allocation_result.PART_NO
+              AND testdata3.SR = allocation_result.SR
+            WHERE allocation_result.is_completed = 0
+              AND COALESCE(allocation_result.is_dismissed, 0) = 0
+              AND (
+                    allocation_result.allocation_session_id IS NOT NULL
+                    OR COALESCE(allocation_result.stage1_status,'idle') = 'running'
+                    OR COALESCE(allocation_result.stage2_status,'idle') = 'running'
+              )
+            ORDER BY allocation_result.id ASC
             """
         )
         rows = cursor.fetchall()

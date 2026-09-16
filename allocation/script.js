@@ -66,11 +66,12 @@ function mapApiAllocation(row, stage) {
   const operationStatus = stage === 'Stage 1' ? row.stage1_status : row.stage2_status;
   if (!machine || !start || !end || operationStatus === 'completed') return null;
   const smhHours = Number(stage === 'Stage 1' ? (row.STAGE1_SMH ?? row.stage1_smh) : (row.STAGE2_SMH ?? row.stage2_smh)) || 0;
+  const partNumber = String(row.PART_NO ?? row.part_no ?? row.partNumber ?? '').trim();
 
   return {
     id: `db-${row.id}-${stage === 'Stage 1' ? 's1' : 's2'}`,
     sr: row.SR,
-    partNo: row.PART_NO || '',
+    partNo: partNumber,
     machine: machine,
     primaryMachine: isConfiguredMachine(primaryMachine) ? primaryMachine : machine,
     altMachine: isConfiguredMachine(altMachine) ? altMachine : '',
@@ -105,7 +106,9 @@ function mapApiAllocation(row, stage) {
       : Math.max(1, Math.round((new Date(endValue) - new Date(startValue)) / 60000)),
     stage1Completed: Boolean(row.stage1_completed) || row.stage1_status === 'completed',
     isCarriedForward: Boolean(Number(row.is_carried_forward)),
-    smhHours
+    smhHours,
+    stage1Smh: Number(row.STAGE1_SMH ?? row.STAGE1_smh ?? row.stage1_smh) || 0,
+    stage2Smh: Number(row.STAGE2_SMH ?? row.STAGE2_smh ?? row.stage2_smh) || 0
   };
 }
 
@@ -727,11 +730,11 @@ function createAllocationElement(allocation) {
   const estimatedTitle = `Start: ${formatEstimatedStamp(allocation.startDate, allocation.startTime)} · End: ${formatEstimatedStamp(allocation.endDate, allocation.endTime)}`;
   box.innerHTML = `
     <button type="button" class="btn-dismiss-part" data-action="dismiss" title="Remove Part" aria-label="Remove Part" onmousedown="event.stopPropagation()">&times;</button>
-    <div class="alloc-card-heading"><div class="alloc-part-no" title="${text(allocation.partNo)}">${text(allocation.partNo)}</div><div class="alloc-stage">${text(allocation.stage)}</div></div>
+    <div class="alloc-card-heading"><div class="alloc-part-no" title="Part Number: ${text(allocation.partNo)}">${text(allocation.partNo || '—')}</div><div class="alloc-stage">${text(allocation.stage)}</div></div>
     <div class="alloc-summary">
       <span title="Project: ${text(allocation.project)}">Project: ${text(allocation.project)}</span><span title="Module: ${text(allocation.module)}">Module: ${text(allocation.module)}</span><span>Qty: ${text(allocation.quantity)}</span>
     </div>
-    <div class="alloc-time-group"><strong>Scheduled Date</strong><span class="scheduled-value">${formatDisplayDate(allocation.startDate)}<br>${formatTime12(allocation.startTime)} – ${formatTime12(allocation.endTime)}</span></div>
+    <div class="alloc-time-group smh"><strong>SMH</strong><span>Stage 1: ${text(allocation.stage1Smh)} · Stage 2: ${text(allocation.stage2Smh)}</span></div>
     <div class="alloc-time-group estimated"><strong>Estimated</strong><span class="estimated-value" title="${estimatedTitle}">Start: ${formatEstimatedStamp(allocation.startDate, allocation.startTime)}<br>End: ${formatEstimatedStamp(allocation.endDate, allocation.endTime)}${estimatedSegments.length ? `<br>${estimatedSegments.join('<br>')}` : ''}</span></div>
     <div class="alloc-time-group actual"><strong>Actual</strong><span>${allocation.actualStart ? displayActual(allocation.actualStart) : 'Not Started'} / ${allocation.actualEnd ? formatDateTimeDisplay(allocation.actualEnd) : '—'}</span></div>
     ${allocation.manualAssignment ? '<div class="alloc-assignment-badge">MANUAL</div>' : ''}

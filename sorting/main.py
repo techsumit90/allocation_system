@@ -336,12 +336,18 @@ def submit_combinations(payload: SubmitRequest):
                     )
                     completed_parts = {r["part_no"] for r in cursor.fetchall()}
 
+                kept = 0
                 for row in rows:
-                    is_done = row.get("PART_NO") in completed_parts
                     extra = dict(row)
+                    completed_flag = extra.get("is_completed", extra.get("Completed", extra.get("COMPLETED")))
+                    is_done = (
+                        row.get("PART_NO") in completed_parts
+                        or completed_flag is True
+                        or str(completed_flag).strip().lower() in {"true", "yes"}
+                    )
                     if is_done:
-                        extra["already_completed"] = True
-                        extra["message"] = "Part work is already done."
+                        continue
+                    kept += 1
                     results.append(
                         ResultRow(
                             project=combo.project,
@@ -349,6 +355,16 @@ def submit_combinations(payload: SubmitRequest):
                             priority=priority,
                             ac_comp=combo.ac_comp,
                             extra_data=extra,
+                        )
+                    )
+                if kept == 0:
+                    results.append(
+                        ResultRow(
+                            project=combo.project,
+                            module=combo.module,
+                            priority=priority,
+                            ac_comp=combo.ac_comp,
+                            extra_data={"note": "No matching records in DB"},
                         )
                     )
             else:

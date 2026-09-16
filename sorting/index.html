@@ -881,8 +881,17 @@ renderResults(
 /* ══════════════════════════════════════════════
    RESULTS RENDERER
 ══════════════════════════════════════════════ */
+function isCompletedSortedRow(row) {
+    const extra = row?.extra_data || {};
+    if (extra.already_completed === true) return true;
+    const flag = extra.is_completed ?? extra.Completed ?? extra.COMPLETED;
+    return flag === true || flag === 1 || String(flag).toLowerCase() === 'true';
+}
+
 function renderResults(rows, originalCombos) {
-    sortedRowsForAllocation = Array.isArray(rows) ? rows : [];
+    rows = (Array.isArray(rows) ? rows : []).filter(row => !isCompletedSortedRow(row));
+    sortedRowsForAllocation = rows;
+    latestSortedRows = rows;
     const container = document.getElementById('results-container');
     container.innerHTML = '';
 
@@ -1010,7 +1019,8 @@ async function proceedForAllocation() {
                     },
 
                     body: JSON.stringify({
-                        rows: latestSortedRows,
+                        rows: (Array.isArray(latestSortedRows) ? latestSortedRows : [])
+                            .filter(row => !isCompletedSortedRow(row)),
                         user_id: getCurrentUser()?.user_id ?? null
                     })
                 }

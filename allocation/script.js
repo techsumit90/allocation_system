@@ -3,9 +3,13 @@
  * The board renders one normalized allocation model. It starts with the
  * frontend mock source and can be populated by the existing API adapter.
  */
+function todayISTDate() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+}
+
 const CONFIG = {
-  scheduleDate: '2026-08-09',
-  scheduleDateDisplay: '09 Aug 2026',
+  scheduleDate: todayISTDate(),
+  scheduleDateDisplay: '',
   timelineStartHour: 8,
   timelineEndHour: 18,
   snapMinutes: 15,
@@ -296,10 +300,11 @@ function durationMinutes(job) {
   return Number(job.durationMinutes) || Math.max(1, getDuration(job));
 }
 
-function estimatedDurationLabel(job) {
-  const hours = (Number(job.smhHours) > 0 ? Number(job.smhHours) : durationMinutes(job) / 60);
-  const value = hours.toLocaleString(undefined, {maximumFractionDigits:2});
-  return `${value} ${hours === 1 ? 'hour' : 'hours'}`;
+function formatSmhHours(value) {
+  const hours = Number(value);
+  if (!Number.isFinite(hours) || hours <= 0) return '—';
+  const label = hours.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return `${label} ${hours === 1 ? 'hr' : 'hrs'}`;
 }
 
 function formatEstimatedStamp(dateValue, timeValue) {
@@ -734,7 +739,7 @@ function createAllocationElement(allocation) {
     <div class="alloc-summary">
       <span title="Project: ${text(allocation.project)}">Project: ${text(allocation.project)}</span><span title="Module: ${text(allocation.module)}">Module: ${text(allocation.module)}</span><span>Qty: ${text(allocation.quantity)}</span>
     </div>
-    <div class="alloc-time-group smh"><strong>SMH</strong><span>Stage 1: ${text(allocation.stage1Smh)} · Stage 2: ${text(allocation.stage2Smh)}</span></div>
+    <div class="alloc-time-group smh"><strong>SMH</strong><span>Stage 1: ${formatSmhHours(allocation.stage1Smh)} · Stage 2: ${formatSmhHours(allocation.stage2Smh)}</span></div>
     <div class="alloc-time-group estimated"><strong>Estimated</strong><span class="estimated-value" title="${estimatedTitle}">Start: ${formatEstimatedStamp(allocation.startDate, allocation.startTime)}<br>End: ${formatEstimatedStamp(allocation.endDate, allocation.endTime)}${estimatedSegments.length ? `<br>${estimatedSegments.join('<br>')}` : ''}</span></div>
     <div class="alloc-time-group actual"><strong>Actual</strong><span>${allocation.actualStart ? displayActual(allocation.actualStart) : 'Not Started'} / ${allocation.actualEnd ? formatDateTimeDisplay(allocation.actualEnd) : '—'}</span></div>
     ${allocation.manualAssignment ? '<div class="alloc-assignment-badge">MANUAL</div>' : ''}

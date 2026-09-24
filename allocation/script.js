@@ -302,6 +302,13 @@ function estimatedDurationLabel(job) {
   return `${value} ${hours === 1 ? 'hour' : 'hours'}`;
 }
 
+function formatSmhHours(value) {
+  const hours = Number(value);
+  if (!Number.isFinite(hours) || hours <= 0) return '—';
+  const label = hours.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return `${label} ${hours === 1 ? 'hr' : 'hrs'}`;
+}
+
 function formatEstimatedStamp(dateValue, timeValue) {
   return `${formatDisplayDate(dateValue)}, ${formatTime12(timeValue)}`;
 }
@@ -734,7 +741,7 @@ function createAllocationElement(allocation) {
     <div class="alloc-summary">
       <span title="Project: ${text(allocation.project)}">Project: ${text(allocation.project)}</span><span title="Module: ${text(allocation.module)}">Module: ${text(allocation.module)}</span><span>Qty: ${text(allocation.quantity)}</span>
     </div>
-    <div class="alloc-time-group smh"><strong>SMH</strong><span>Stage 1: ${text(allocation.stage1Smh)} · Stage 2: ${text(allocation.stage2Smh)}</span></div>
+    <div class="alloc-time-group smh"><strong>SMH</strong><span>${formatSmhHours(allocation.smhHours)}</span></div>
     <div class="alloc-time-group estimated"><strong>Estimated</strong><span class="estimated-value" title="${estimatedTitle}">Start: ${formatEstimatedStamp(allocation.startDate, allocation.startTime)}<br>End: ${formatEstimatedStamp(allocation.endDate, allocation.endTime)}${estimatedSegments.length ? `<br>${estimatedSegments.join('<br>')}` : ''}</span></div>
     <div class="alloc-time-group actual"><strong>Actual</strong><span>${allocation.actualStart ? displayActual(allocation.actualStart) : 'Not Started'} / ${allocation.actualEnd ? formatDateTimeDisplay(allocation.actualEnd) : '—'}</span></div>
     ${allocation.manualAssignment ? '<div class="alloc-assignment-badge">MANUAL</div>' : ''}

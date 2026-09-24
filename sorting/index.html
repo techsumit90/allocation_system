@@ -884,8 +884,10 @@ renderResults(
 function isCompletedSortedRow(row) {
     const extra = row?.extra_data || {};
     if (extra.already_completed === true) return true;
-    const flag = extra.is_completed ?? extra.Completed ?? extra.COMPLETED;
-    return flag === true || flag === 1 || String(flag).toLowerCase() === 'true';
+    const workOrder = String(extra.work_order || extra.WORK_ORDER || extra['Work Order'] || '').trim();
+    const sameWorkFlag = extra.same_work_already_processed === true;
+    if (sameWorkFlag && workOrder) return true;
+    return false;
 }
 
 function renderResults(rows, originalCombos) {

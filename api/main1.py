@@ -167,7 +167,7 @@ def value_from_extra(extra: Dict[str, Any], *names: str) -> Any:
 
 
 def build_start_datetime() -> datetime:
-    today = ist_now().date()
+    today = date.today()
     return datetime.combine(
         today,
         time(ALLOCATION_START_HOUR, ALLOCATION_START_MINUTE),
@@ -518,7 +518,6 @@ def seed_machine_available_from_active_rows(cursor) -> None:
     """/allocate no longer wipes allocation_result, so a fresh run must pick up
     machine queue-end times from whatever is already active, not start empty."""
     global machine_available
-    live_start = align_to_working_start(build_start_datetime())
     cursor.execute("""
         SELECT selected_stage1_machine AS machine, MAX(stage1_end) AS latest FROM allocation_result
         WHERE selected_stage1_machine IS NOT NULL AND is_completed=0 AND COALESCE(is_dismissed,0)=0
@@ -530,12 +529,9 @@ def seed_machine_available_from_active_rows(cursor) -> None:
     """)
     for row in cursor.fetchall():
         if row["machine"] and row["latest"]:
-            latest = row["latest"]
-            if latest < live_start:
-                latest = live_start
             current = machine_available.get(row["machine"])
-            if current is None or latest > current:
-                machine_available[row["machine"]] = latest
+            if current is None or row["latest"] > current:
+                machine_available[row["machine"]] = row["latest"]
 
 
 def recalculate_machine_queues(cursor, stage_one: bool, machines: List[str]) -> None:
@@ -583,21 +579,26 @@ def recalculate_machine_queues(cursor, stage_one: bool, machines: List[str]) -> 
             operation["start_time"] or datetime.max,
             operation["id"],
         ))
-        live_start = align_to_working_start(build_start_datetime())
-        current = live_start
+        # A queue is always rebuilt from the configured schedule start.  Using
+        # an operation's previous start here leaked its old-machine timestamp
+        # into a newly selected machine after a drag/drop.
+        current = align_to_working_start(build_start_datetime())
+        for operation in queue:
+            if operation.get("operation_status") == "running" and operation.get("end_time"):
+                current = align_to_working_start(max(current, operation["end_time"]))
         for position, operation in enumerate(queue, start=1):
             if operation["stage1_ready_at"]:
-                ready_at = operation["stage1_ready_at"]
-                if ready_at < live_start:
-                    ready_at = live_start
-                current = align_to_working_start(max(current, ready_at))
+                current = align_to_working_start(max(current, operation["stage1_ready_at"]))
             duration_hours = to_float(operation["duration_hours"])
             if duration_hours <= 0 and operation["start_time"] and operation["end_time"]:
                 duration_hours = max(
                     0.0,
                     (operation["end_time"] - operation["start_time"]).total_seconds() / 3600.0,
                 )
-            start, end = calculate_working_schedule(current, duration_hours)
+            if operation.get("operation_status") == "running" and operation["start_time"] and operation["end_time"]:
+                start, end = operation["start_time"], operation["end_time"]
+            else:
+                start, end = calculate_working_schedule(current, duration_hours)
             prefix = operation["stage"]
             cursor.execute(f"""UPDATE allocation_result
                 SET queue_position=%s, {prefix}_queue_position=%s,
@@ -1077,25 +1078,6 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
             if incoming_wo:
                 occupied_work_orders.setdefault(str(row["PART_NO"]), set()).add(incoming_wo)
 
-        cursor.execute("""
-            SELECT DISTINCT machine FROM (
-                SELECT selected_stage1_machine AS machine FROM allocation_result
-                 WHERE selected_stage1_machine IS NOT NULL AND is_completed=0
-                   AND COALESCE(is_dismissed,0)=0
-                   AND (allocation_session_id IS NOT NULL
-                        OR COALESCE(stage1_status,'idle')='running'
-                        OR COALESCE(stage2_status,'idle')='running')
-                UNION
-                SELECT selected_stage2_machine AS machine FROM allocation_result
-                 WHERE selected_stage2_machine IS NOT NULL AND is_completed=0
-                   AND COALESCE(is_dismissed,0)=0
-                   AND (allocation_session_id IS NOT NULL
-                        OR COALESCE(stage1_status,'idle')='running'
-                        OR COALESCE(stage2_status,'idle')='running')
-            ) live_machines
-        """)
-        live_machines = [row["machine"] for row in cursor.fetchall() if row["machine"]]
-        recalculate_machine_queues(cursor, True, live_machines)
         recalculate_stage2_dependencies(cursor)
         connection.commit()
         return processed, run_date, skipped_completed, skipped_duplicate, batch_id

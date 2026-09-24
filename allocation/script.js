@@ -3,13 +3,9 @@
  * The board renders one normalized allocation model. It starts with the
  * frontend mock source and can be populated by the existing API adapter.
  */
-function todayISTDate() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
-}
-
 const CONFIG = {
-  scheduleDate: todayISTDate(),
-  scheduleDateDisplay: '',
+  scheduleDate: '2026-08-09',
+  scheduleDateDisplay: '09 Aug 2026',
   timelineStartHour: 8,
   timelineEndHour: 18,
   snapMinutes: 15,
@@ -298,6 +294,12 @@ function stageDependencySatisfied(allocation) {
 
 function durationMinutes(job) {
   return Number(job.durationMinutes) || Math.max(1, getDuration(job));
+}
+
+function estimatedDurationLabel(job) {
+  const hours = (Number(job.smhHours) > 0 ? Number(job.smhHours) : durationMinutes(job) / 60);
+  const value = hours.toLocaleString(undefined, {maximumFractionDigits:2});
+  return `${value} ${hours === 1 ? 'hour' : 'hours'}`;
 }
 
 function formatSmhHours(value) {

@@ -167,6 +167,9 @@ def ensure_allocation_schema(cursor) -> None:
             UNIQUE KEY uq_completed_operation (allocation_id, stage)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """)
+    history_columns = _table_columns(cursor, "allocation_history")
+    if "work_order" not in history_columns:
+        cursor.execute("ALTER TABLE allocation_history ADD COLUMN work_order VARCHAR(150) DEFAULT NULL")
 
 
 @app.get("/auth/check-username")
@@ -319,33 +322,41 @@ def submit_combinations(payload: SubmitRequest):
 
             if rows:
                 part_nos = [r["PART_NO"] for r in rows if r.get("PART_NO")]
-                completed_parts = set()
+                occupied_work_orders = {}
                 if part_nos:
                     placeholders = ",".join(["%s"] * len(part_nos))
-                    # A part is permanently done if it's flagged is_completed on
-                    # allocation_result, OR it already has a completed operation
-                    # in allocation_history (covers rows from before is_completed
-                    # existed). Backend-enforced — not a frontend-only filter.
+                    # Same Part Number + same Work Order is already processed.
+                    # Empty/missing Work Order does not block a later allocation.
                     cursor.execute(
-                        f"""SELECT PART_NO AS part_no FROM allocation_result
-                            WHERE PART_NO IN ({placeholders}) AND is_completed=1
+                        f"""SELECT PART_NO AS part_no, work_order FROM allocation_result
+                            WHERE PART_NO IN ({placeholders})
+                              AND work_order IS NOT NULL AND TRIM(work_order) <> ''
                             UNION
-                            SELECT part_no FROM allocation_history
-                            WHERE part_no IN ({placeholders})""",
+                            SELECT part_no, work_order FROM allocation_history
+                            WHERE part_no IN ({placeholders})
+                              AND work_order IS NOT NULL AND TRIM(work_order) <> ''""",
                         tuple(part_nos) + tuple(part_nos),
                     )
-                    completed_parts = {r["part_no"] for r in cursor.fetchall()}
+                    for occupied in cursor.fetchall():
+                        part_no = occupied.get("part_no")
+                        work_order = str(occupied.get("work_order") or "").strip()
+                        if part_no and work_order:
+                            occupied_work_orders.setdefault(part_no, set()).add(work_order)
 
                 kept = 0
                 for row in rows:
                     extra = dict(row)
-                    completed_flag = extra.get("is_completed", extra.get("Completed", extra.get("COMPLETED")))
-                    is_done = (
-                        row.get("PART_NO") in completed_parts
-                        or completed_flag is True
-                        or str(completed_flag).strip().lower() in {"true", "yes"}
+                    incoming_wo = str(
+                        extra.get("work_order")
+                        or extra.get("WORK_ORDER")
+                        or extra.get("Work Order")
+                        or ""
+                    ).strip()
+                    part_no = row.get("PART_NO")
+                    same_work_already_processed = bool(
+                        incoming_wo and incoming_wo in occupied_work_orders.get(part_no, set())
                     )
-                    if is_done:
+                    if same_work_already_processed:
                         continue
                     kept += 1
                     results.append(

@@ -558,13 +558,13 @@ body {
 
 .allocation-box.active-machine-part.carried-forward-part,
 .allocation-box.carried-forward-part {
-  background: #E6D7FF;
-  border-color: #c4b5fd;
-  border-left: 4px solid #8b5cf6;
+  background: #FFEDD5;
+  border-color: #FDBA74;
+  border-left: 4px solid #FB923C;
 }
 .allocation-box.active-machine-part.carried-forward-part .alloc-part-no,
 .allocation-box.carried-forward-part .alloc-part-no {
-  color: #5b21b6;
+  color: #C2410C;
 }
 
 .btn-dismiss-part {

@@ -445,22 +445,40 @@ def mark_row_completed_if_done(cursor, allocation_id: int) -> None:
         close_batch_if_fully_completed(cursor, row.get("batch_id"))
 
 
-def completed_part_numbers(cursor, part_nos: List[str]) -> set:
-    """Union of allocation_result.is_completed=1 and allocation_history —
-    the single source of truth every workflow (sorting, allocate, manual) must
-    check before letting a part be allocated again."""
+def normalize_work_order(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def occupied_work_orders_by_part(cursor, part_nos: List[str]) -> Dict[str, set]:
+    """Non-empty Work Orders already used for a Part Number (allocated, worked, or completed)."""
+    occupied: Dict[str, set] = {}
     part_nos = [p for p in dict.fromkeys(part_nos) if p]
     if not part_nos:
-        return set()
+        return occupied
     placeholders = ",".join(["%s"] * len(part_nos))
     cursor.execute(
-        f"""SELECT PART_NO AS part_no FROM allocation_result
-            WHERE PART_NO IN ({placeholders}) AND is_completed=1
+        f"""SELECT PART_NO AS part_no, work_order FROM allocation_result
+            WHERE PART_NO IN ({placeholders}) AND COALESCE(is_dismissed, 0)=0
+              AND work_order IS NOT NULL AND TRIM(work_order) <> ''
             UNION
-            SELECT part_no FROM allocation_history WHERE part_no IN ({placeholders})""",
+            SELECT part_no, work_order FROM allocation_history
+            WHERE part_no IN ({placeholders})
+              AND work_order IS NOT NULL AND TRIM(work_order) <> ''""",
         tuple(part_nos) + tuple(part_nos),
     )
-    return {r["part_no"] for r in cursor.fetchall()}
+    for row in cursor.fetchall():
+        part_no = row.get("part_no")
+        work_order = normalize_work_order(row.get("work_order"))
+        if part_no and work_order:
+            occupied.setdefault(str(part_no), set()).add(work_order)
+    return occupied
+
+
+def part_work_order_taken(occupied: Dict[str, set], part_no: Any, work_order: Any) -> bool:
+    wo = normalize_work_order(work_order)
+    if not wo:
+        return False
+    return wo in occupied.get(str(part_no or ""), set())
 
 
 def active_part_numbers(cursor, part_nos: List[str]) -> set:
@@ -834,6 +852,7 @@ def normalize_row(sorted_row: SortedRow, cursor, input_position: int) -> Dict[st
         "PRIORITY": priority,
         "MODULE": module,
         "PART_NO": part_no or f"ROW-{input_position}",
+        "work_order": normalize_work_order(field("work_order", "WORK_ORDER", "Work Order")) or None,
         "machine_STAGE1": clean_machine(field("machine_STAGE1", "stage1Machine")),
         "machine_STAGE1_A": clean_machine(field("machine_STAGE1_A", "stage1MachineA")),
         "STAGE1_SMH": to_float(field("STAGE1_SMH", "STAGE1_smh", "stage1_smh")),
@@ -901,8 +920,7 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
             if part_no:
                 candidate_part_nos.append(str(part_no))
 
-        completed = completed_part_numbers(cursor, candidate_part_nos)
-        already_active = active_part_numbers(cursor, candidate_part_nos)
+        occupied_work_orders = occupied_work_orders_by_part(cursor, candidate_part_nos)
         dismissed = dismissed_part_numbers(cursor, candidate_part_nos)
 
         # Highest existing queue position per machine, so appended rows extend
@@ -919,16 +937,17 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
         processed = 0
         skipped_completed: List[str] = []
         skipped_duplicate: List[str] = []
+        seen_part_nos = set()
 
         # IMPORTANT: no sorting happens here. The list is consumed exactly in
         # the order supplied by Sorting Dashboard.
         for input_position, sorted_row in enumerate(sorted_rows, start=1):
             row = normalize_row(sorted_row, cursor, input_position)
 
-            if row["PART_NO"] in completed:
-                skipped_completed.append(row["PART_NO"])
+            if part_work_order_taken(occupied_work_orders, row["PART_NO"], row.get("work_order")):
+                skipped_duplicate.append(row["PART_NO"])
                 continue
-            if row["PART_NO"] in already_active:
+            if row["PART_NO"] in seen_part_nos:
                 skipped_duplicate.append(row["PART_NO"])
                 continue
             if row["PART_NO"] in dismissed:
@@ -977,8 +996,11 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
             queue_position = max(stage1_queue_position or 0, stage2_queue_position or 0) or None
 
             cursor.execute(
-                """SELECT id, stage1_status, stage2_status FROM allocation_result
+                """SELECT id, stage1_status, stage2_status, work_order FROM allocation_result
                    WHERE PART_NO=%s AND is_completed=0 AND COALESCE(is_dismissed,0)=0
+                     AND allocation_session_id IS NULL
+                     AND COALESCE(stage1_status,'idle') <> 'running'
+                     AND COALESCE(stage2_status,'idle') <> 'running'
                    LIMIT 1""",
                 (row["PART_NO"],),
             )
@@ -997,6 +1019,10 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
                 planned_start, planned_end, batch_id, session_id,
             )
             if existing:
+                leftover_wo = normalize_work_order(existing.get("work_order"))
+                if leftover_wo and leftover_wo != normalize_work_order(row.get("work_order")):
+                    existing = None
+            if existing:
                 stage1_status = "completed" if existing.get("stage1_status") == "completed" else "idle"
                 stage2_status = "completed" if existing.get("stage2_status") == "completed" else "idle"
                 cursor.execute(
@@ -1012,9 +1038,9 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
                         status=%s, queue_position=%s, stage1_queue_position=%s,
                         stage2_queue_position=%s, planned_start=%s, planned_end=%s,
                         batch_id=%s, allocation_session_id=%s, is_carried_forward=0,
-                        stage1_status=%s, stage2_status=%s
+                        work_order=%s, stage1_status=%s, stage2_status=%s
                        WHERE id=%s""",
-                    values + (stage1_status, stage2_status, existing["id"]),
+                    values + (row.get("work_order"), stage1_status, stage2_status, existing["id"]),
                 )
             else:
                 cursor.execute(
@@ -1046,9 +1072,10 @@ def allocate_rows(sorted_rows: List[SortedRow], user_id: Optional[int] = None) -
                     values,
                 )
             processed += 1
-            # Guards against the same PART_NO appearing twice within one
-            # /allocate request (e.g. duplicate CSV rows) — not just across calls.
-            already_active.add(row["PART_NO"])
+            seen_part_nos.add(row["PART_NO"])
+            incoming_wo = normalize_work_order(row.get("work_order"))
+            if incoming_wo:
+                occupied_work_orders.setdefault(str(row["PART_NO"]), set()).add(incoming_wo)
 
         cursor.execute("""
             SELECT DISTINCT machine FROM (
@@ -1109,10 +1136,8 @@ def allocate(payload: AllocationRequest):
 
     try:
         count, run_date, skipped_completed, skipped_duplicate, batch_id = allocate_rows(payload.rows, payload.user_id)
-        if count == 0 and skipped_completed and not skipped_duplicate:
-            message = "Part work is already done."
-        elif skipped_completed or skipped_duplicate:
-            message = f"Allocated {count} new row(s). {len(skipped_completed)} already completed, {len(skipped_duplicate)} already active were skipped."
+        if skipped_completed or skipped_duplicate:
+            message = f"Allocated {count} new row(s). {len(skipped_duplicate)} same Part Number + Work Order were skipped."
         else:
             message = "Sorted rows allocated successfully in the received order."
         return AllocationResponse(
@@ -1168,12 +1193,39 @@ def update_work_order(allocation_id: int, payload: dict):
     cursor = connection.cursor(dictionary=True)
     try:
         ensure_allocation_table(cursor)
-        cursor.execute("SELECT id FROM allocation_result WHERE id=%s", (allocation_id,))
-        if not cursor.fetchone():
+        ensure_history_table(cursor)
+        cursor.execute("SELECT id, PART_NO FROM allocation_result WHERE id=%s", (allocation_id,))
+        current = cursor.fetchone()
+        if not current:
             raise HTTPException(status_code=404, detail="Allocation row not found.")
+        saved_wo = work_order or None
+        if saved_wo:
+            cursor.execute(
+                """SELECT id FROM allocation_result
+                   WHERE PART_NO=%s AND id<>%s AND COALESCE(is_dismissed,0)=0
+                     AND work_order=%s
+                   LIMIT 1""",
+                (current["PART_NO"], allocation_id, saved_wo),
+            )
+            if cursor.fetchone():
+                raise HTTPException(
+                    status_code=409,
+                    detail="The same Part Number and Work Order is already allocated or completed.",
+                )
+            cursor.execute(
+                """SELECT 1 FROM allocation_history
+                   WHERE part_no=%s AND work_order=%s AND allocation_id<>%s
+                   LIMIT 1""",
+                (current["PART_NO"], saved_wo, allocation_id),
+            )
+            if cursor.fetchone():
+                raise HTTPException(
+                    status_code=409,
+                    detail="The same Part Number and Work Order is already allocated or completed.",
+                )
         cursor.execute(
             "UPDATE allocation_result SET work_order=%s WHERE id=%s",
-            (work_order or None, allocation_id),
+            (saved_wo, allocation_id),
         )
         connection.commit()
         return {"success": True, "id": allocation_id, "work_order": work_order or None}
